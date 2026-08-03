@@ -1,0 +1,15 @@
+{
+  "name": "zhiyu",
+  "private": true,
+  "packageManager": "pnpm@10.12.1",
+  "scripts": {
+    "dev": "concurrently -k -n api,web -c blue,magenta \"BIND_ADDR=127.0.0.1:8790 PUBLIC_BASE_URL=http://127.0.0.1:5173 DATABASE_URL=${DATABASE_URL:-file:./var/preview.db} cargo run -p zhiyu-api --bin zhiyu-api\" \"API_PROXY=http://127.0.0.1:8790 pnpm --dir apps/web dev\"",
+    "build": "cargo build --workspace --locked && pnpm --dir apps/web build",
+    "check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --dir apps/web check",
+    "test:e2e": "pnpm --dir apps/web test:e2e",
+    "verify:design": "node scripts/verify-design.mjs"
+  },
+  "devDependencies": {
+    "concurrently": "^9.2.0"
+  }
+}
