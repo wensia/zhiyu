@@ -16,9 +16,10 @@ export type Debt = Omit<GeneratedDebt, "account" | "additions" | "repayments"> &
 }
 export type DebtList = Omit<components["schemas"]["DebtListResponse"], "items"> & { items: Debt[] }
 export type DebtStatus = components["schemas"]["DebtStatus"]
+export type DebtOriginKind = components["schemas"]["DebtOriginKind"]
 export type Counterparty = components["schemas"]["CounterpartyView"]
 export type Summary = components["schemas"]["DashboardSummary"]
-export type CreateDebtInput = components["schemas"]["CreateDebtRequest"] & { accountId: string }
+export type CreateDebtInput = components["schemas"]["CreateDebtRequest"]
 export type CreateDebtAdditionInput = components["schemas"]["CreateDebtAdditionRequest"] & { accountId: string }
 export type UpdateDebtInput = components["schemas"]["UpdateDebtRequest"]
 export type CreateRepaymentInput = components["schemas"]["CreateRepaymentRequest"] & { accountId: string }

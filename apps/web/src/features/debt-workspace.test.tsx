@@ -70,6 +70,7 @@ const debt = {
   dueOn: "2026-08-09",
   note: "朋友借款",
   account: accountBrief,
+  originKind: "cash_movement" as const,
   status: "due_soon" as const,
   archived: false,
   version: 2,
@@ -199,7 +200,7 @@ describe("DebtWorkspace", () => {
 
     await user.click(await screen.findByRole("button", { name: /新增债务/ }))
     const dialog = screen.getByRole("dialog", { name: "新增债务" })
-    await user.type(within(dialog).getByLabelText("联系人名称"), "阿青")
+    await user.type(within(dialog).getByLabelText("联系人"), "阿青")
     await user.type(within(dialog).getByLabelText("本金（元）"), "1000")
     await user.click(within(dialog).getByRole("button", { name: "保存" }))
     expect(await within(dialog).findByText("请选择收款账户")).toBeInTheDocument()
@@ -213,8 +214,51 @@ describe("DebtWorkspace", () => {
       accountId: "account-1",
       counterpartyName: "阿青",
       direction: "borrow_in",
+      originKind: "cash_movement",
       principalCents: 100_000,
     })))
+  })
+
+  it("creates a cashless debt without choosing an account", async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.createDebt).mockResolvedValue(debt)
+    renderWorkspace()
+
+    await user.click(await screen.findByRole("button", { name: /新增债务/ }))
+    const dialog = screen.getByRole("dialog", { name: "新增债务" })
+    await user.click(within(dialog).getByRole("button", { name: "赊账·无资金进出" }))
+    expect(within(dialog).queryByRole("combobox", { name: "收款账户" })).not.toBeInTheDocument()
+    expect(within(dialog).getByText(/不计入任何账户流水/)).toBeInTheDocument()
+
+    await user.type(within(dialog).getByLabelText("联系人"), "代办记账")
+    await user.type(within(dialog).getByLabelText("本金（元）"), "1500")
+    await user.click(within(dialog).getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(api.createDebt).toHaveBeenCalledWith(expect.objectContaining({
+      accountId: null,
+      counterpartyName: "代办记账",
+      direction: "borrow_in",
+      originKind: "no_cash_movement",
+      principalCents: 150_000,
+    })))
+  })
+
+  it("shows a cashless debt as a confirmed payable with no account movement", async () => {
+    const cashlessDebt = {
+      ...debt,
+      direction: "borrow_in",
+      account: null,
+      originKind: "no_cash_movement" as const,
+      note: "代办执照+代记账尾款",
+    }
+    vi.mocked(api.debt).mockResolvedValue(cashlessDebt)
+    renderWorkspace(["/app/debts/debt-1"])
+
+    expect(await screen.findByText("确认应付 ¥1,000.00")).toBeInTheDocument()
+    expect(screen.queryByText("初始借入 ¥1,000.00")).not.toBeInTheDocument()
+    expect(screen.getAllByText("无资金进出").length).toBeGreaterThan(1)
+    expect(screen.getAllByText(/资金往来/).length).toBeGreaterThan(1)
+    expect(screen.queryByText("历史未指定")).not.toBeInTheDocument()
   })
 
   it("keeps legacy movements with no structured account readable", async () => {

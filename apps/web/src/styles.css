@@ -76,6 +76,15 @@ h1, h2, h3, p { margin: 0; }
 .select-item[data-state="checked"] { color: var(--primary); background: var(--primary-subtle); font-weight: 500; }
 .select-indicator { position: absolute; right: var(--space-2); display: inline-flex; align-items: center; justify-content: center; }
 .select-indicator svg { width: 16px; height: 16px; }
+.creatable-select { position: relative; }
+.creatable-select-input { padding-right: 32px; }
+.creatable-select-icon { position: absolute; top: 50%; right: var(--space-3); width: 16px; height: 16px; transform: translateY(-50%); display: inline-flex; align-items: center; justify-content: center; color: var(--muted-foreground); pointer-events: none; }
+.creatable-select-icon svg { width: 16px; height: 16px; }
+.creatable-select-content { position: absolute; top: calc(100% + 4px); left: 0; width: 100%; min-width: 0; max-height: 280px; padding: var(--space-1); overflow-y: auto; }
+.creatable-select-create { gap: 6px; color: var(--muted-foreground); }
+.creatable-select-create svg { width: 16px; height: 16px; flex: 0 0 16px; }
+.creatable-select-create[data-highlighted] { color: var(--foreground); }
+.creatable-select-empty { padding: 6px var(--space-2); color: var(--muted-foreground); font-size: var(--text-meta); }
 
 .notice { display: flex; align-items: center; justify-content: space-between; gap: var(--space-3); min-height: 40px; padding: var(--space-3); border-radius: var(--radius-card); background: var(--info-bg); color: var(--info); }
 .notice-error { color: var(--destructive); background: var(--destructive-bg); }
@@ -315,6 +324,7 @@ td[data-sticky-cell="right"] { z-index: 20; }
 .dialog-footer.borderless { padding: var(--space-4) 0 0; border: 0; }
 .form-stack { display: grid; gap: var(--field-rhythm); }
 .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
+.form-grid-3 { grid-template-columns: 3fr 4fr 4fr; }
 .account-form { display: grid; gap: var(--space-4); }
 .account-form-section { display: grid; gap: var(--space-3); }
 .account-form-section + .account-form-section { padding-top: var(--space-4); border-top: 1px solid var(--border); }
@@ -493,7 +503,7 @@ td[data-sticky-cell="right"] { z-index: 20; }
   .page-header .button-primary .button-label { display: none; }
   .toolbar { grid-template-columns: 1fr; }
   .search-box, .toggle { grid-column: auto; width: 100%; }
-  .form-grid { grid-template-columns: 1fr; }
+  .form-grid, .form-grid-3 { grid-template-columns: 1fr; }
   .segmented { height: auto; grid-template-columns: 1fr; }
   .segmented button { height: 40px; }
   .detail-overview-header { flex-direction: column; gap: var(--space-3); }

@@ -17,6 +17,7 @@ const LEDGER_ACCOUNT_NAME_SOURCE_MIGRATION: &str =
     include_str!("../migrations/0006_ledger_account_name_source.sql");
 const LEDGER_ACCOUNT_CARD_NUMBER_MIGRATION: &str =
     include_str!("../migrations/0007_ledger_account_card_number.sql");
+const DEBT_ORIGIN_KIND_MIGRATION: &str = include_str!("../migrations/0008_debt_origin_kind.sql");
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, INITIAL_MIGRATION),
     (2, DEBT_ADDITIONS_MIGRATION),
@@ -25,6 +26,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, LEDGER_ACCOUNT_DETAILS_MIGRATION),
     (6, LEDGER_ACCOUNT_NAME_SOURCE_MIGRATION),
     (7, LEDGER_ACCOUNT_CARD_NUMBER_MIGRATION),
+    (8, DEBT_ORIGIN_KIND_MIGRATION),
 ];
 
 pub async fn connect(config: &Config) -> Result<Database> {
@@ -196,77 +198,11 @@ mod tests {
             .query("SELECT version FROM schema_migrations ORDER BY version", ())
             .await
             .unwrap();
-        assert_eq!(
-            versions
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<i64>(0)
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            versions
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<i64>(0)
-                .unwrap(),
-            2
-        );
-        assert_eq!(
-            versions
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<i64>(0)
-                .unwrap(),
-            3
-        );
-        assert_eq!(
-            versions
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<i64>(0)
-                .unwrap(),
-            4
-        );
-        assert_eq!(
-            versions
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<i64>(0)
-                .unwrap(),
-            5
-        );
-        assert_eq!(
-            versions
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<i64>(0)
-                .unwrap(),
-            6
-        );
-        assert_eq!(
-            versions
-                .next()
-                .await
-                .unwrap()
-                .unwrap()
-                .get::<i64>(0)
-                .unwrap(),
-            7
-        );
-        assert!(versions.next().await.unwrap().is_none());
+        let mut applied = Vec::new();
+        while let Some(row) = versions.next().await.unwrap() {
+            applied.push(row.get::<i64>(0).unwrap());
+        }
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8]);
         let mut tables = conn
             .query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'debt_addition_events'",
@@ -677,5 +613,75 @@ mod tests {
         assert_eq!(row.get::<String>(2).unwrap(), "上海支行");
         assert!(row.get::<Option<String>>(3).unwrap().is_none());
         assert_eq!(row.get::<i64>(4).unwrap(), 4);
+    }
+
+    #[tokio::test]
+    async fn existing_v7_debts_gain_origin_kind_from_account_presence() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(root.path().join("debt-origin-kind.db"))
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().take(7) {
+            apply_migration(&conn, *version, sql).await.unwrap();
+        }
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, created_at, updated_at) VALUES ('u1', 'origin-kind@example.com', 'hash', 'Asia/Shanghai', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_accounts(id, user_id, name, normalized_name, name_source, account_type, note, version, created_at, updated_at) VALUES ('a1', 'u1', '微信零钱', '微信零钱', 'derived', 'wechat_balance', '', 1, '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO counterparties(id, user_id, display_name, normalized_name, created_at, updated_at) VALUES ('c1', 'u1', '旧联系人', '旧联系人', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO debts(id, user_id, counterparty_id, direction, principal_cents, occurred_on, note, account_id, created_at, updated_at) VALUES ('d1', 'u1', 'c1', 'lend_out', 10000, '2026-08-01', '有账户的旧借款', 'a1', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO debts(id, user_id, counterparty_id, direction, principal_cents, occurred_on, note, account_id, created_at, updated_at) VALUES ('d2', 'u1', 'c1', 'borrow_in', 150000, '2026-08-01', '无账户的历史欠款', NULL, '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        migrate(&db).await.unwrap();
+
+        let mut rows = conn
+            .query(
+                "SELECT id, origin_kind FROM debts WHERE user_id = 'u1' ORDER BY id",
+                (),
+            )
+            .await
+            .unwrap();
+        let first = rows.next().await.unwrap().unwrap();
+        assert_eq!(first.get::<String>(0).unwrap(), "d1");
+        assert_eq!(first.get::<String>(1).unwrap(), "cash_movement");
+        let second = rows.next().await.unwrap().unwrap();
+        assert_eq!(second.get::<String>(0).unwrap(), "d2");
+        assert_eq!(second.get::<String>(1).unwrap(), "legacy_unknown");
+
+        let invalid = conn
+            .execute("UPDATE debts SET origin_kind = 'gift' WHERE id = 'd1'", ())
+            .await;
+        assert!(invalid.is_err());
     }
 }

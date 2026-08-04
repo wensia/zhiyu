@@ -4,11 +4,13 @@ import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu"
 import * as SelectPrimitive from "@radix-ui/react-select"
 import * as TabsPrimitive from "@radix-ui/react-tabs"
 import * as ToastPrimitive from "@radix-ui/react-toast"
-import { ArrowDownLeftIcon, ArrowUpRightIcon, CalendarIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, EllipsisIcon, EyeIcon, EyeOffIcon, XIcon } from "lucide-react"
+import { ArrowDownLeftIcon, ArrowUpRightIcon, CalendarIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, EllipsisIcon, EyeIcon, EyeOffIcon, PlusIcon, XIcon } from "lucide-react"
 import {
   createContext,
   useCallback,
   useContext,
+  useEffect,
+  useId,
   useMemo,
   useRef,
   useState,
@@ -467,6 +469,150 @@ export function FilterSelect(props: Omit<SelectProps, "clearable">) {
   return <Select {...props} clearLabel={`清空${props.ariaLabel}筛选`} clearable />
 }
 
+type CreatableSelectProps = {
+  value: string
+  text: string
+  onSelect: (value: string) => void
+  onTextChange: (text: string) => void
+  options: SelectOption[]
+  ariaLabel: string
+  placeholder?: string
+  createLabel?: (text: string) => string
+  emptyHint?: string
+  disabled?: boolean
+  className?: string
+}
+
+export function CreatableSelect({
+  value,
+  text,
+  onSelect,
+  onTextChange,
+  options,
+  ariaLabel,
+  placeholder,
+  createLabel = (name) => `新建"${name}"`,
+  emptyHint = "暂无选项，直接输入新建",
+  disabled = false,
+  className = "",
+}: CreatableSelectProps) {
+  const [open, setOpen] = useState(false)
+  const [activeIndex, setActiveIndex] = useState(-1)
+  const listId = useId()
+  const rootRef = useRef<HTMLDivElement>(null)
+  const openRef = useRef(open)
+  openRef.current = open
+  // Radix layers dismiss on a document capture-phase Escape listener, so the
+  // popup must intercept Escape in capture before the dialog sees it.
+  useEffect(() => {
+    const closeOnEscape = (event: globalThis.KeyboardEvent) => {
+      if (event.key !== "Escape" || !openRef.current) return
+      if (!rootRef.current?.contains(event.target as Node)) return
+      event.preventDefault()
+      setOpen(false)
+      setActiveIndex(-1)
+    }
+    document.addEventListener("keydown", closeOnEscape, { capture: true })
+    return () => document.removeEventListener("keydown", closeOnEscape, { capture: true })
+  }, [])
+  const selected = options.find((option) => option.value === value)
+  const display = selected ? selected.label : text
+  const query = selected ? "" : text.trim()
+  const filtered = query ? options.filter((option) => option.label.toLowerCase().includes(query.toLowerCase())) : options
+  const exact = query ? options.some((option) => option.label.trim().toLowerCase() === query.toLowerCase()) : true
+  const creatable = Boolean(query) && !exact
+  const itemCount = filtered.length + (creatable ? 1 : 0)
+
+  const choose = (index: number) => {
+    if (index < 0 || index >= itemCount) return
+    if (index < filtered.length) {
+      onTextChange("")
+      onSelect(filtered[index].value)
+    }
+    setOpen(false)
+    setActiveIndex(-1)
+  }
+
+  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault()
+      if (!open) {
+        setOpen(true)
+        setActiveIndex(event.key === "ArrowDown" ? 0 : itemCount - 1)
+        return
+      }
+      if (!itemCount) return
+      setActiveIndex((current) => event.key === "ArrowDown" ? (current + 1) % itemCount : (current - 1 + itemCount) % itemCount)
+      return
+    }
+    if (event.key === "Enter" && open && activeIndex >= 0) {
+      event.preventDefault()
+      choose(activeIndex)
+      return
+    }
+    if (event.key === "Escape" && open) {
+      event.stopPropagation()
+      setOpen(false)
+      setActiveIndex(-1)
+    }
+  }
+
+  return (
+    <div className={`creatable-select ${className}`} ref={rootRef}>
+      <input
+        aria-activedescendant={open && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
+        aria-autocomplete="list"
+        aria-controls={listId}
+        aria-expanded={open}
+        aria-label={ariaLabel}
+        autoComplete="off"
+        className="input creatable-select-input"
+        disabled={disabled}
+        onBlur={() => { setOpen(false); setActiveIndex(-1) }}
+        onChange={(event) => { onTextChange(event.target.value); if (value) onSelect(""); setOpen(true); setActiveIndex(-1) }}
+        onFocus={() => setOpen(true)}
+        onKeyDown={onKeyDown}
+        placeholder={placeholder}
+        role="combobox"
+        value={display}
+      />
+      <span className="creatable-select-icon"><ChevronDownIcon /></span>
+      {open ? (
+        <div className="select-content creatable-select-content" id={listId} onMouseDown={(event) => event.preventDefault()} role="listbox">
+          {filtered.map((option, index) => (
+            <div
+              aria-selected={option.value === value}
+              className="select-item"
+              data-highlighted={index === activeIndex || undefined}
+              data-state={option.value === value ? "checked" : undefined}
+              id={`${listId}-${index}`}
+              key={option.value}
+              onClick={() => choose(index)}
+              role="option"
+            >
+              {option.label}
+              {option.value === value ? <span className="select-indicator"><CheckIcon /></span> : null}
+            </div>
+          ))}
+          {creatable ? (
+            <div
+              aria-selected={false}
+              className="select-item creatable-select-create"
+              data-highlighted={activeIndex === filtered.length || undefined}
+              id={`${listId}-${filtered.length}`}
+              onClick={() => choose(filtered.length)}
+              role="option"
+            >
+              <PlusIcon /> {createLabel(query)}
+            </div>
+          ) : null}
+          {!itemCount ? <div className="creatable-select-empty">{emptyHint}</div> : null}
+        </div>
+      ) : null}
+    </div>
+  )
+}
+
 export function Modal({
   open,
   onOpenChange,
@@ -494,7 +640,7 @@ export function Modal({
               <Dialog.Title>{title}</Dialog.Title>
               {description ? <Dialog.Description>{description}</Dialog.Description> : null}
             </div>
-            <Dialog.Close asChild><Button aria-label="关闭" size="icon-sm" variant="ghost"><XIcon /></Button></Dialog.Close>
+            <Dialog.Close asChild><Button aria-label="关闭" className="button-quiet" size="icon-sm" variant="ghost"><XIcon /></Button></Dialog.Close>
           </header>
           <div className="dialog-body">{children}</div>
           {footer ? <footer className="dialog-footer">{footer}</footer> : null}
@@ -512,7 +658,7 @@ export function Sheet({ open, onOpenChange, title, children }: { open: boolean; 
         <Dialog.Content className="sheet">
           <header className="dialog-header">
             <Dialog.Title>{title}</Dialog.Title>
-            <Dialog.Close asChild><Button aria-label="关闭" size="icon-sm" variant="ghost"><XIcon /></Button></Dialog.Close>
+            <Dialog.Close asChild><Button aria-label="关闭" className="button-quiet" size="icon-sm" variant="ghost"><XIcon /></Button></Dialog.Close>
           </header>
           <div className="sheet-body">{children}</div>
         </Dialog.Content>

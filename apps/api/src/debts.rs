@@ -16,10 +16,11 @@ use crate::{
     domain::{
         AccountType, CounterpartyBrief, CounterpartyView, CreateCounterpartyRequest,
         CreateDebtAdditionRequest, CreateDebtRequest, CreateRepaymentRequest, DashboardSummary,
-        DebtAdditionEventView, DebtListQuery, DebtListResponse, DebtStatus, DebtView,
-        LedgerAccountBrief, MAX_SAFE_CENTS, RepaymentEventView, ReverseRepaymentRequest,
+        DebtAdditionEventView, DebtListQuery, DebtListResponse, DebtOriginKind, DebtStatus,
+        DebtView, LedgerAccountBrief, MAX_SAFE_CENTS, RepaymentEventView, ReverseRepaymentRequest,
         UpdateCounterpartyRequest, UpdateDebtAdditionRequest, UpdateDebtRequest,
         UpdateRepaymentRequest, VersionRequest, debt_status, validate_amount, validate_date,
+        validate_debt_origin,
     },
     error::ApiError,
 };
@@ -116,7 +117,9 @@ pub async fn create_debt(
         return Ok(response);
     }
 
-    ensure_active_ledger_account(&tx, &user.id, &input.account_id).await?;
+    let origin_kind = input.origin_kind.unwrap_or(DebtOriginKind::CashMovement);
+    validate_debt_origin(origin_kind, input.account_id.as_deref(), None)?;
+    ensure_active_ledger_account_if_present(&tx, &user.id, input.account_id.as_deref()).await?;
 
     let counterparty_id = if let Some(id) = input.counterparty_id.as_deref() {
         ensure_counterparty(&tx, &user.id, id).await?;
@@ -129,8 +132,8 @@ pub async fn create_debt(
     let id = Uuid::now_v7().to_string();
     let now = Utc::now().to_rfc3339();
     tx.execute(
-        "INSERT INTO debts(id, user_id, counterparty_id, direction, principal_cents, currency, occurred_on, due_on, note, created_at, updated_at, account_id) VALUES (?1, ?2, ?3, ?4, ?5, 'CNY', ?6, ?7, ?8, ?9, ?9, ?10)",
-        params![id.clone(), user.id.clone(), counterparty_id, input.direction.as_str(), input.principal_cents, input.occurred_on, input.due_on, input.note.trim(), now, input.account_id],
+        "INSERT INTO debts(id, user_id, counterparty_id, direction, principal_cents, currency, occurred_on, due_on, note, created_at, updated_at, account_id, origin_kind) VALUES (?1, ?2, ?3, ?4, ?5, 'CNY', ?6, ?7, ?8, ?9, ?9, ?10, ?11)",
+        params![id.clone(), user.id.clone(), counterparty_id, input.direction.as_str(), input.principal_cents, input.occurred_on, input.due_on, input.note.trim(), now, input.account_id, origin_kind.as_str()],
     ).await?;
     let debt = load_debt(&tx, &user, &id, true).await?;
     store_idempotency(
@@ -174,9 +177,8 @@ pub async fn update_debt(
         return Ok(response);
     }
     ensure_counterparty(&tx, &user.id, &input.counterparty_id).await?;
-    ensure_active_ledger_account(&tx, &user.id, &input.account_id).await?;
     let mut rows = tx.query(
-        "SELECT d.principal_cents, b.event_count FROM debts d JOIN debt_balances b ON b.debt_id = d.id WHERE d.id = ?1 AND d.user_id = ?2",
+        "SELECT d.principal_cents, b.event_count, d.origin_kind FROM debts d JOIN debt_balances b ON b.debt_id = d.id WHERE d.id = ?1 AND d.user_id = ?2",
         params![id.clone(), user.id.clone()],
     ).await?;
     let row = rows
@@ -185,7 +187,21 @@ pub async fn update_debt(
         .ok_or_else(|| ApiError::not_found("找不到该笔债务"))?;
     let existing_principal: i64 = row.get(0)?;
     let event_count: i64 = row.get(1)?;
+    let existing_origin: String = row.get(2)?;
     drop(rows);
+    let existing_origin = DebtOriginKind::from_db(&existing_origin)?;
+    // 旧客户端不传 originKind：给了账户视为有实际收付款，否则保持原类型
+    let origin_kind = input.origin_kind.unwrap_or(if input.account_id.is_some() {
+        DebtOriginKind::CashMovement
+    } else {
+        existing_origin
+    });
+    validate_debt_origin(
+        origin_kind,
+        input.account_id.as_deref(),
+        Some(existing_origin),
+    )?;
+    ensure_active_ledger_account_if_present(&tx, &user.id, input.account_id.as_deref()).await?;
     if event_count > 0 && existing_principal != input.principal_cents {
         return Err(ApiError::conflict(
             "principal_locked",
@@ -193,8 +209,8 @@ pub async fn update_debt(
         ));
     }
     let changed = tx.execute(
-        "UPDATE debts SET counterparty_id = ?1, account_id = ?2, principal_cents = ?3, occurred_on = ?4, due_on = ?5, note = ?6, version = version + 1, updated_at = ?7 WHERE id = ?8 AND user_id = ?9 AND version = ?10",
-        params![input.counterparty_id, input.account_id.clone(), input.principal_cents, input.occurred_on, input.due_on, input.note.trim(), Utc::now().to_rfc3339(), id.clone(), user.id.clone(), input.version],
+        "UPDATE debts SET counterparty_id = ?1, account_id = ?2, origin_kind = ?3, principal_cents = ?4, occurred_on = ?5, due_on = ?6, note = ?7, version = version + 1, updated_at = ?8 WHERE id = ?9 AND user_id = ?10 AND version = ?11",
+        params![input.counterparty_id, input.account_id.clone(), origin_kind.as_str(), input.principal_cents, input.occurred_on, input.due_on, input.note.trim(), Utc::now().to_rfc3339(), id.clone(), user.id.clone(), input.version],
     ).await?;
     if changed == 0 {
         return Err(ApiError::conflict(
@@ -941,7 +957,7 @@ async fn load_debt(
     include_events: bool,
 ) -> Result<DebtView, ApiError> {
     let mut rows = conn.query(
-        "SELECT d.id, d.direction, d.principal_cents, d.currency, d.occurred_on, d.due_on, d.note, d.archived_at, d.version, d.created_at, d.updated_at, c.id, c.display_name, b.paid_cents, b.remaining_cents, a.id, a.name, a.account_type, a.archived_at FROM debts d JOIN counterparties c ON c.id = d.counterparty_id JOIN debt_balances b ON b.debt_id = d.id LEFT JOIN ledger_accounts a ON a.id = d.account_id AND a.user_id = d.user_id WHERE d.id = ?1 AND d.user_id = ?2",
+        "SELECT d.id, d.direction, d.principal_cents, d.currency, d.occurred_on, d.due_on, d.note, d.archived_at, d.version, d.created_at, d.updated_at, c.id, c.display_name, b.paid_cents, b.remaining_cents, a.id, a.name, a.account_type, a.archived_at, d.origin_kind FROM debts d JOIN counterparties c ON c.id = d.counterparty_id JOIN debt_balances b ON b.debt_id = d.id LEFT JOIN ledger_accounts a ON a.id = d.account_id AND a.user_id = d.user_id WHERE d.id = ?1 AND d.user_id = ?2",
         params![id, user.id.clone()],
     ).await?;
     let row = rows
@@ -951,6 +967,7 @@ async fn load_debt(
     let due_on: Option<String> = row.get(5)?;
     let archived_at: Option<String> = row.get(7)?;
     let remaining_cents: i64 = row.get(14)?;
+    let origin_kind: String = row.get(19)?;
     let mut debt = DebtView {
         id: row.get(0)?,
         direction: row.get(1)?,
@@ -971,6 +988,7 @@ async fn load_debt(
         remaining_cents,
         status: DebtStatus::Open,
         account: ledger_account_brief(&row, 15, 16, 17, 18)?,
+        origin_kind: DebtOriginKind::from_db(&origin_kind)?,
         repayments: Vec::new(),
         additions: Vec::new(),
     };
@@ -1095,6 +1113,17 @@ async fn ensure_counterparty(conn: &Connection, user_id: &str, id: &str) -> Resu
         .await?;
     if rows.next().await?.is_none() {
         return Err(ApiError::validation("联系人不存在或已归档"));
+    }
+    Ok(())
+}
+
+async fn ensure_active_ledger_account_if_present(
+    conn: &Connection,
+    user_id: &str,
+    id: Option<&str>,
+) -> Result<(), ApiError> {
+    if let Some(id) = id {
+        ensure_active_ledger_account(conn, user_id, id).await?;
     }
     Ok(())
 }

@@ -81,7 +81,7 @@ impl Modify for SecurityAddon {
     components(schemas(
         domain::UserView, domain::RegisterRequest, domain::LoginRequest, domain::EmailRequest,
         domain::TokenRequest, domain::ResetPasswordRequest, domain::MessageResponse,
-        domain::DebtDirection, domain::DebtStatus, domain::CounterpartyView,
+        domain::DebtDirection, domain::DebtStatus, domain::DebtOriginKind, domain::CounterpartyView,
         domain::RepaymentEventView, domain::DebtAdditionEventView, domain::DebtView, domain::CounterpartyBrief,
         domain::DebtListResponse, domain::CreateDebtRequest, domain::UpdateDebtRequest,
         domain::VersionRequest, domain::CreateRepaymentRequest, domain::CreateDebtAdditionRequest,

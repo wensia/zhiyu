@@ -430,13 +430,14 @@ export interface components {
             note?: string;
         };
         CreateDebtRequest: {
-            accountId: string;
+            accountId?: string | null;
             counterpartyId?: string | null;
             counterpartyName?: string | null;
             direction: components["schemas"]["DebtDirection"];
             dueOn?: string | null;
             note?: string;
             occurredOn: string;
+            originKind?: null | components["schemas"]["DebtOriginKind"];
             /** Format: int64 */
             principalCents: number;
         };
@@ -489,6 +490,8 @@ export interface components {
             total: number;
         };
         /** @enum {string} */
+        DebtOriginKind: "cash_movement" | "no_cash_movement" | "legacy_unknown";
+        /** @enum {string} */
         DebtStatus: "archived" | "settled" | "overdue" | "due_soon" | "open";
         DebtView: {
             account?: null | components["schemas"]["LedgerAccountBrief"];
@@ -502,6 +505,7 @@ export interface components {
             id: string;
             note: string;
             occurredOn: string;
+            originKind: components["schemas"]["DebtOriginKind"];
             /** Format: int64 */
             paidCents: number;
             /** Format: int64 */
@@ -601,11 +605,12 @@ export interface components {
             version: number;
         };
         UpdateDebtRequest: {
-            accountId: string;
+            accountId?: string | null;
             counterpartyId: string;
             dueOn?: string | null;
             note?: string;
             occurredOn: string;
+            originKind?: null | components["schemas"]["DebtOriginKind"];
             /** Format: int64 */
             principalCents: number;
             /** Format: int64 */

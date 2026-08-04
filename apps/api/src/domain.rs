@@ -82,6 +82,33 @@ impl TryFrom<String> for DebtDirection {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum DebtOriginKind {
+    CashMovement,
+    NoCashMovement,
+    LegacyUnknown,
+}
+
+impl DebtOriginKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::CashMovement => "cash_movement",
+            Self::NoCashMovement => "no_cash_movement",
+            Self::LegacyUnknown => "legacy_unknown",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Result<Self, ApiError> {
+        match value {
+            "cash_movement" => Ok(Self::CashMovement),
+            "no_cash_movement" => Ok(Self::NoCashMovement),
+            "legacy_unknown" => Ok(Self::LegacyUnknown),
+            _ => Err(ApiError::internal("debt origin kind is invalid")),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum DebtStatus {
@@ -241,6 +268,7 @@ pub struct DebtView {
     pub created_at: String,
     pub updated_at: String,
     pub account: Option<LedgerAccountBrief>,
+    pub origin_kind: DebtOriginKind,
     pub repayments: Vec<RepaymentEventView>,
     pub additions: Vec<DebtAdditionEventView>,
 }
@@ -279,7 +307,9 @@ pub struct CreateDebtRequest {
     pub direction: DebtDirection,
     pub counterparty_id: Option<String>,
     pub counterparty_name: Option<String>,
-    pub account_id: String,
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub origin_kind: Option<DebtOriginKind>,
     pub principal_cents: i64,
     pub occurred_on: String,
     pub due_on: Option<String>,
@@ -292,7 +322,9 @@ pub struct CreateDebtRequest {
 pub struct UpdateDebtRequest {
     pub version: i64,
     pub counterparty_id: String,
-    pub account_id: String,
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub origin_kind: Option<DebtOriginKind>,
     pub principal_cents: i64,
     pub occurred_on: String,
     pub due_on: Option<String>,
@@ -463,6 +495,31 @@ pub fn validate_amount(value: i64) -> Result<(), ApiError> {
         return Err(ApiError::validation("金额必须大于 0 且在安全范围内"));
     }
     Ok(())
+}
+
+/// 校验债务来源类型与资金账户的组合：
+/// 有实际收付款必须有账户，赊账（无资金进出）不能有账户，
+/// legacy_unknown 仅允许存量数据在编辑时原样保留。
+pub fn validate_debt_origin(
+    origin_kind: DebtOriginKind,
+    account_id: Option<&str>,
+    existing: Option<DebtOriginKind>,
+) -> Result<(), ApiError> {
+    match origin_kind {
+        DebtOriginKind::CashMovement if account_id.is_none() => {
+            Err(ApiError::validation("有实际收付款的债务需要选择资金账户"))
+        }
+        DebtOriginKind::NoCashMovement if account_id.is_some() => {
+            Err(ApiError::validation("无资金进出的债务不能指定资金账户"))
+        }
+        DebtOriginKind::LegacyUnknown if account_id.is_some() => {
+            Err(ApiError::validation("历史未指定的债务不能指定资金账户"))
+        }
+        DebtOriginKind::LegacyUnknown if existing != Some(DebtOriginKind::LegacyUnknown) => {
+            Err(ApiError::validation("历史未指定的债务类型仅用于存量数据"))
+        }
+        _ => Ok(()),
+    }
 }
 
 pub fn debt_status(

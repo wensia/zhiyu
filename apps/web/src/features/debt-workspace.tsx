@@ -23,6 +23,7 @@ import {
   ActionMenu,
   CheckboxControl,
   ConfirmDialog,
+  CreatableSelect,
   DatePicker,
   DirectionTag,
   Field,
@@ -42,8 +43,6 @@ import {
 import { elapsedCalendarDays } from "./debt-time"
 import { ledgerAccountDisplayLabel } from "./ledger-account"
 
-const NEW_COUNTERPARTY = "__new_counterparty__"
-
 const statusLabels: Record<DebtStatus, string> = {
   archived: "已归档",
   settled: "已结清",
@@ -61,6 +60,12 @@ const toCents = (value: string) => {
 
 const principalAccountLabel = (direction: Debt["direction"]) => direction === "borrow_in" ? "收款账户" : "付款账户"
 const repaymentAccountLabel = (direction: Debt["direction"]) => direction === "borrow_in" ? "付款账户" : "收款账户"
+const debtOriginAccountText = (debt: { account: LedgerAccountRef | null; originKind: Debt["originKind"] }) => {
+  if (debt.account) return ledgerAccountDisplayLabel(debt.account)
+  return debt.originKind === "no_cash_movement" ? "无资金进出" : "历史未指定"
+}
+const debtOriginAccountLabel = (debt: { account: LedgerAccountRef | null; direction: Debt["direction"]; originKind: Debt["originKind"] }) =>
+  !debt.account && debt.originKind === "no_cash_movement" ? "资金往来" : principalAccountLabel(debt.direction)
 const visibleNote = (note: string, account: LedgerAccountRef | null) => {
   const value = note.trim()
   if (account) {
@@ -192,7 +197,7 @@ function DebtTable({ items, loading, onOpen }: { items: Debt[]; loading: boolean
   const columns = useMemo(() => [
     columnHelper.accessor("counterparty.displayName", { header: "联系人", cell: ({ row, getValue }) => <button className="row-link" onClick={(event) => { event.stopPropagation(); onOpen(row.original.id) }}>{getValue()}</button> }),
     columnHelper.accessor("direction", { header: "方向", cell: ({ getValue }) => <DirectionLabel direction={getValue()} /> }),
-    columnHelper.accessor("account", { header: "资金账户", cell: ({ getValue }) => ledgerAccountDisplayLabel(getValue()) }),
+    columnHelper.accessor("account", { header: "资金账户", cell: ({ row }) => debtOriginAccountText(row.original) }),
     columnHelper.display({ id: "overview", header: "债务概况", cell: ({ row }) => <div className="debt-overview-cell">
       <div className="debt-overview-line debt-overview-amounts">
         <span><span>本金</span>{" "}{yuan(row.original.principalCents)}</span>
@@ -267,7 +272,7 @@ function DebtTable({ items, loading, onOpen }: { items: Debt[]; loading: boolean
             <p className="debt-card-amounts"><span>本金 {yuan(debt.principalCents)}</span><span>已还 {yuan(debt.paidCents)}</span></p>
             <p>{debt.direction === "lend_out" ? "借出" : "借入"}日期 {debt.occurredOn} · 间隔 {elapsedCalendarDays(debt.occurredOn)} 天</p>
             <p>{debt.dueOn ? `${debt.dueOn} 到期` : "未设置到期日"}</p>
-            <p>{principalAccountLabel(debt.direction)}：{ledgerAccountDisplayLabel(debt.account)}</p>
+            <p>{debtOriginAccountLabel(debt)}：{debtOriginAccountText(debt)}</p>
             <Button aria-label={`查看 ${debt.counterparty.displayName} 的债务详情`} onClick={() => onOpen(debt.id)} size="sm">查看详情</Button>
           </article>
         ))}
@@ -286,12 +291,12 @@ function ContactGrid({ items, loading }: { items: Counterparty[]; loading: boole
   return <div className="contact-grid">{items.map((item) => <article className="contact-card" key={item.id}><div><span className="contact-avatar">{item.displayName.slice(0, 1)}</span><div><h2>{item.displayName}</h2><p>{item.activeDebtCount} 笔进行中{item.overdueCount ? ` · ${item.overdueCount} 笔逾期` : ""}</p></div></div><dl><div><dt>待收</dt><dd>{yuan(item.lendOutRemainingCents)}</dd></div><div><dt>待还</dt><dd>{yuan(item.borrowInRemainingCents)}</dd></div><div><dt>净额</dt><dd>{yuan(item.netCents)}</dd></div></dl></article>)}</div>
 }
 
-type DebtDraft = { direction: "borrow_in" | "lend_out"; accountId: string; counterpartyId: string; counterpartyName: string; principal: string; occurredOn: string; dueOn: string; note: string }
+type DebtDraft = { direction: "borrow_in" | "lend_out"; originKind: "cash_movement" | "no_cash_movement"; accountId: string; counterpartyId: string; counterpartyName: string; principal: string; occurredOn: string; dueOn: string; note: string }
 type InitialDebtMovement = { id: string; amountCents: number; effectiveOn: string; note: string; account: Debt["account"]; createdAt: string }
 
 export function DebtFormModal({ accounts, accountsLoading = false, open, onOpenChange, counterparties, debt, onManageAccounts = () => undefined, onSaved }: { accounts?: LedgerAccount[]; accountsLoading?: boolean; open: boolean; onOpenChange: (open: boolean) => void; counterparties: Counterparty[]; debt?: Debt; onManageAccounts?: () => void; onSaved: () => Promise<unknown> }) {
   const toast = useToast()
-  const initial = useMemo<DebtDraft>(() => ({ direction: (debt?.direction as DebtDraft["direction"]) || "borrow_in", accountId: debt?.account?.id || "", counterpartyId: debt?.counterparty.id || "", counterpartyName: "", principal: debt ? String(debt.principalCents / 100) : "", occurredOn: debt?.occurredOn || today(), dueOn: debt?.dueOn || "", note: debt?.note || "" }), [debt])
+  const initial = useMemo<DebtDraft>(() => ({ direction: (debt?.direction as DebtDraft["direction"]) || "borrow_in", originKind: debt && debt.originKind !== "cash_movement" ? "no_cash_movement" : "cash_movement", accountId: debt?.account?.id || "", counterpartyId: debt?.counterparty.id || "", counterpartyName: "", principal: debt ? String(debt.principalCents / 100) : "", occurredOn: debt?.occurredOn || today(), dueOn: debt?.dueOn || "", note: debt?.note || "" }), [debt])
   const [draft, setDraft] = useState<DebtDraft>(initial)
   const [error, setError] = useState("")
   useEffect(() => { if (open) { setDraft(initial); setError("") } }, [open, initial])
@@ -299,9 +304,11 @@ export function DebtFormModal({ accounts, accountsLoading = false, open, onOpenC
     const cents = toCents(draft.principal)
     if (!cents) throw new Error("请输入正确的本金金额")
     if (!draft.counterpartyId && !draft.counterpartyName.trim()) throw new Error("请选择或填写联系人")
-    if (!draft.accountId) throw new Error(`请选择${principalAccountLabel(draft.direction)}`)
-    if (debt) return api.updateDebt(debt.id, { version: debt.version, accountId: draft.accountId, counterpartyId: draft.counterpartyId, principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note })
-    return api.createDebt({ direction: draft.direction, accountId: draft.accountId, counterpartyId: draft.counterpartyId || null, counterpartyName: draft.counterpartyId ? null : draft.counterpartyName.trim(), principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note })
+    if (draft.originKind === "cash_movement" && !draft.accountId) throw new Error(`请选择${principalAccountLabel(draft.direction)}`)
+    const accountId = draft.originKind === "cash_movement" ? draft.accountId : null
+    const originKind = draft.originKind
+    if (debt) return api.updateDebt(debt.id, { version: debt.version, accountId, originKind, counterpartyId: draft.counterpartyId, principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note })
+    return api.createDebt({ direction: draft.direction, accountId, originKind, counterpartyId: draft.counterpartyId || null, counterpartyName: draft.counterpartyId ? null : draft.counterpartyName.trim(), principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note })
   }, onSuccess: async () => {
     await onSaved()
     onOpenChange(false)
@@ -317,22 +324,32 @@ export function DebtFormModal({ accounts, accountsLoading = false, open, onOpenC
     : activeCounterparties
   const counterpartyOptions = debt
     ? selectableCounterparties.map((item) => ({ value: item.id, label: item.displayName }))
-    : [{ value: NEW_COUNTERPARTY, label: "新联系人" }, ...activeCounterparties.map((item) => ({ value: item.id, label: item.displayName }))]
+    : activeCounterparties.map((item) => ({ value: item.id, label: item.displayName }))
   const principalLocked = Boolean(debt && (debt.repayments.length > 0 || (debt.additions?.length || 0) > 0))
   const activeAccounts = (accounts || []).filter((account) => !account.archived)
-  return <Modal open={open} onOpenChange={onOpenChange} title={debt ? "编辑债务" : "新增债务"} footer={<><Button disabled={mutation.isPending} onClick={() => onOpenChange(false)}>取消</Button><Button disabled={mutation.isPending || accountsLoading || activeAccounts.length === 0} onClick={() => mutation.mutate()} variant="default">{mutation.isPending ? "正在保存…" : "保存"}</Button></>}>
+  const needsAccount = draft.originKind === "cash_movement"
+  return <Modal open={open} onOpenChange={onOpenChange} title={debt ? "编辑债务" : "新增债务"} footer={<><Button disabled={mutation.isPending} onClick={() => onOpenChange(false)}>取消</Button><Button disabled={mutation.isPending || accountsLoading || (needsAccount && activeAccounts.length === 0)} onClick={() => mutation.mutate()} variant="default">{mutation.isPending ? "正在保存…" : "保存"}</Button></>}>
     <div className="form-stack">
       <div className="choice-field">
         <span className="field-label">方向</span>
         <div aria-describedby={debt ? "direction-locked-reason" : undefined} className="segmented"><button aria-pressed={draft.direction === "borrow_in"} disabled={Boolean(debt)} onClick={() => set("direction", "borrow_in")}><ArrowDownLeftIcon /> 借入（我欠别人）</button><button aria-pressed={draft.direction === "lend_out"} disabled={Boolean(debt)} onClick={() => set("direction", "lend_out")}><ArrowUpRightIcon /> 借出（别人欠我）</button></div>
         {debt ? <span className="field-description" id="direction-locked-reason">债务方向创建后不可修改</span> : null}
       </div>
-      <MoneyAccountField accounts={accounts || []} label={principalAccountLabel(draft.direction)} loading={accountsLoading} onManage={() => { onOpenChange(false); onManageAccounts() }} onValueChange={(value) => set("accountId", value)} value={draft.accountId} />
-      <Field className="field-medium" label="联系人"><Select ariaLabel="联系人" onValueChange={(value) => set("counterpartyId", value === NEW_COUNTERPARTY ? "" : value)} options={counterpartyOptions} value={draft.counterpartyId || NEW_COUNTERPARTY} /></Field>
-      {!draft.counterpartyId ? <Field className="field-short" label="联系人名称"><Input value={draft.counterpartyName} onChange={(event) => set("counterpartyName", event.target.value)} placeholder="姓名或称呼" /></Field> : null}
-      <Field className="field-number" description={principalLocked ? "已有追加或还款记录，本金不可修改" : undefined} label="本金（元）"><Input disabled={principalLocked} inputMode="decimal" value={draft.principal} onChange={(event) => set("principal", event.target.value)} placeholder="0.00" /></Field>
-      <div className="form-grid"><Field label="发生日期"><DatePicker ariaLabel="发生日期" onValueChange={(value) => set("occurredOn", value)} value={draft.occurredOn} /></Field><Field label="到期日（可选）"><DatePicker ariaLabel="到期日（可选）" clearable onValueChange={(value) => set("dueOn", value)} placeholder="选择到期日" value={draft.dueOn} /></Field></div>
-      <Field label="备注"><Textarea rows={4} value={draft.note} onChange={(event) => set("note", event.target.value)} placeholder="可选" /></Field>
+      <div className="choice-field">
+        <span className="field-label">资金往来</span>
+        <div className="segmented"><button aria-pressed={draft.originKind === "cash_movement"} onClick={() => set("originKind", "cash_movement")}><CircleDollarSignIcon /> 有实际收付款</button><button aria-pressed={draft.originKind === "no_cash_movement"} onClick={() => set("originKind", "no_cash_movement")}><HandCoinsIcon /> 赊账·无资金进出</button></div>
+        {needsAccount ? null : <span className="field-description">适用于赊购服务、先消费后付款等没有资金进出的场景，不计入任何账户流水。</span>}
+      </div>
+      {needsAccount ? <MoneyAccountField accounts={accounts || []} label={principalAccountLabel(draft.direction)} loading={accountsLoading} onManage={() => { onOpenChange(false); onManageAccounts() }} onValueChange={(value) => set("accountId", value)} value={draft.accountId} /> : null}
+      {debt
+        ? <Field className="field-medium" label="联系人"><Select ariaLabel="联系人" onValueChange={(value) => set("counterpartyId", value)} options={counterpartyOptions} value={draft.counterpartyId} /></Field>
+        : <Field className="field-medium" label="联系人"><CreatableSelect ariaLabel="联系人" onSelect={(value) => set("counterpartyId", value)} onTextChange={(name) => setDraft((current) => ({ ...current, counterpartyId: "", counterpartyName: name }))} options={counterpartyOptions} placeholder="选择或输入姓名" text={draft.counterpartyName} value={draft.counterpartyId} /></Field>}
+      <div className="form-grid form-grid-3">
+        <Field description={principalLocked ? "已有追加或还款记录，本金不可修改" : undefined} label="本金（元）"><Input disabled={principalLocked} inputMode="decimal" value={draft.principal} onChange={(event) => set("principal", event.target.value)} placeholder="0.00" /></Field>
+        <Field label="发生日期"><DatePicker ariaLabel="发生日期" onValueChange={(value) => set("occurredOn", value)} value={draft.occurredOn} /></Field>
+        <Field label="到期日（可选）"><DatePicker ariaLabel="到期日（可选）" clearable onValueChange={(value) => set("dueOn", value)} placeholder="选择到期日" value={draft.dueOn} /></Field>
+      </div>
+      <Field label="备注"><Textarea rows={3} value={draft.note} onChange={(event) => set("note", event.target.value)} placeholder="可选" /></Field>
       {error ? <InlineNotice type="error">{error}</InlineNotice> : null}
     </div>
   </Modal>
@@ -410,7 +427,7 @@ export function DebtDetailPage() {
           <dl className="detail-information-list">
             <div><dt>发生日期</dt><dd>{debt.occurredOn}</dd></div>
             <div><dt>到期日期</dt><dd>{debt.dueOn || "未设置"}</dd></div>
-            <div><dt>{principalAccountLabel(debt.direction)}</dt><dd>{ledgerAccountDisplayLabel(debt.account)}</dd></div>
+            <div><dt>{debtOriginAccountLabel(debt)}</dt><dd>{debtOriginAccountText(debt)}</dd></div>
           </dl>
         </aside>
         <div className="detail-main">
@@ -537,7 +554,9 @@ function RepaymentRow({ debt, event, onEdit, onSaved }: { debt: Debt; event: Deb
 function InitialDebtRow({ debt, event }: { debt: Debt; event: InitialDebtMovement }) {
   const isLendOut = debt.direction === "lend_out"
   const note = visibleNote(event.note, event.account)
-  return <MovementTimelineRow account={event.account} accountLabel={principalAccountLabel(debt.direction)} amountCents={event.amountCents} date={event.effectiveOn} icon={isLendOut ? <ArrowUpRightIcon /> : <ArrowDownLeftIcon />} note={note} title={isLendOut ? "初始借出" : "初始借入"} tone={isLendOut ? "lend" : "borrow"} />
+  const cashless = debt.originKind === "no_cash_movement" && !event.account
+  const title = cashless ? (isLendOut ? "确认应收" : "确认应付") : (isLendOut ? "初始借出" : "初始借入")
+  return <MovementTimelineRow account={event.account} accountDisplay={cashless ? "无资金进出" : undefined} accountLabel={cashless ? "资金往来" : principalAccountLabel(debt.direction)} amountCents={event.amountCents} date={event.effectiveOn} icon={isLendOut ? <ArrowUpRightIcon /> : <ArrowDownLeftIcon />} note={note} title={title} tone={isLendOut ? "lend" : "borrow"} />
 }
 
 function DebtAdditionRow({ debt, event, onEdit }: { debt: Debt; event: Debt["additions"][number]; onEdit: (event: Debt["additions"][number]) => void }) {
@@ -551,6 +570,7 @@ type TimelineAction = { label: string; icon: ReactNode; onSelect: () => void }
 
 function MovementTimelineRow({
   account,
+  accountDisplay,
   accountLabel,
   actionLabel,
   actions,
@@ -563,6 +583,7 @@ function MovementTimelineRow({
   tone,
 }: {
   account: LedgerAccountRef | null
+  accountDisplay?: string
   accountLabel: string
   actionLabel?: string
   actions?: TimelineAction[]
@@ -581,7 +602,7 @@ function MovementTimelineRow({
       <div className="timeline-copy">
         <div className="timeline-heading"><strong>{title} {yuan(amountCents)}</strong>{reversed ? <span className="timeline-reversed-badge">已撤销</span> : null}</div>
         <div className="timeline-meta">
-          <span className="timeline-account"><span>{accountLabel}：</span><span>{ledgerAccountDisplayLabel(account)}</span></span>
+          <span className="timeline-account"><span>{accountLabel}：</span><span>{accountDisplay ?? ledgerAccountDisplayLabel(account)}</span></span>
           {note ? <span className="timeline-note"><span>备注：</span><span>{note}</span></span> : null}
         </div>
       </div>

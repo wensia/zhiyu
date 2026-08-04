@@ -1381,6 +1381,148 @@ async fn session_mutations_require_matching_origin() {
     assert_eq!(body["code"], "forbidden");
 }
 
+#[tokio::test]
+async fn cashless_debts_skip_the_principal_account_but_repayments_keep_theirs() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("cashless@example.com").await;
+    let account = test
+        .create_ledger_account(&cookie, "微信支付-赊账", "wechat_balance")
+        .await;
+    let account_id = account["id"].as_str().unwrap();
+
+    // 默认（有实际收付款）但不给账户 → 422
+    let (status, _, body) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/debts",
+        Some(json!({ "direction": "borrow_in", "counterpartyName": "代办记账", "principalCents": 150_000, "occurredOn": "2026-08-04", "accountId": null })),
+        Some(&cookie),
+        Some("cashless-missing-account"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    assert_eq!(body["code"], "validation_error");
+
+    // 赊账却指定账户 → 422
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/debts",
+        Some(json!({ "direction": "borrow_in", "counterpartyName": "代办记账", "principalCents": 150_000, "occurredOn": "2026-08-04", "originKind": "no_cash_movement", "accountId": account_id })),
+        Some(&cookie),
+        Some("cashless-with-account"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 新建不允许历史未指定类型 → 422
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/debts",
+        Some(json!({ "direction": "borrow_in", "counterpartyName": "代办记账", "principalCents": 150_000, "occurredOn": "2026-08-04", "originKind": "legacy_unknown", "accountId": null })),
+        Some(&cookie),
+        Some("cashless-legacy-kind"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    // 赊账创建成功：无账户、originKind 透出
+    let (status, _, created) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/debts",
+        Some(json!({ "direction": "borrow_in", "counterpartyName": "代办记账", "principalCents": 150_000, "occurredOn": "2026-08-04", "note": "代办执照+代记账尾款", "originKind": "no_cash_movement", "accountId": null })),
+        Some(&cookie),
+        Some("cashless-create"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["originKind"], "no_cash_movement");
+    assert!(created["account"].is_null());
+    assert_eq!(created["remainingCents"], 150_000);
+    let debt_id = created["id"].as_str().unwrap();
+    let counterparty_id = created["counterparty"]["id"].as_str().unwrap();
+
+    // 缺省 originKind + 账户 → 向后兼容，默认为 cash_movement
+    let (status, _, cash_created) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/debts",
+        Some(json!({ "direction": "lend_out", "counterpartyName": "阿青", "principalCents": 10_000, "occurredOn": "2026-08-04", "accountId": account_id })),
+        Some(&cookie),
+        Some("cash-default-kind"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(cash_created["originKind"], "cash_movement");
+    assert_eq!(cash_created["account"]["id"], account_id);
+
+    // 赊账债务登记还款（有账户）→ 201，剩余减少
+    let repay_path = format!("/api/v1/debts/{debt_id}/repayments");
+    let (status, _, paid) = send(
+        &test.router,
+        Method::POST,
+        &repay_path,
+        Some(
+            json!({ "amountCents": 50_000, "effectiveOn": "2026-08-05", "accountId": account_id }),
+        ),
+        Some(&cookie),
+        Some("cashless-repay"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(paid["remainingCents"], 100_000);
+
+    // 编辑：切换为有实际收付款必须补账户
+    let debt_path = format!("/api/v1/debts/{debt_id}");
+    let (status, _, _) = send(
+        &test.router,
+        Method::PATCH,
+        &debt_path,
+        Some(json!({ "version": paid["version"], "counterpartyId": counterparty_id, "principalCents": 150_000, "occurredOn": "2026-08-04", "originKind": "cash_movement", "accountId": null, "note": "" })),
+        Some(&cookie),
+        Some("cashless-to-cash-missing"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+    let (status, _, updated) = send(
+        &test.router,
+        Method::PATCH,
+        &debt_path,
+        Some(json!({ "version": paid["version"], "counterpartyId": counterparty_id, "principalCents": 150_000, "occurredOn": "2026-08-04", "originKind": "cash_movement", "accountId": account_id, "note": "" })),
+        Some(&cookie),
+        Some("cashless-to-cash"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["originKind"], "cash_movement");
+    assert_eq!(updated["account"]["id"], account_id);
+
+    // 编辑：切换回赊账需丢弃账户
+    let (status, _, switched) = send(
+        &test.router,
+        Method::PATCH,
+        &debt_path,
+        Some(json!({ "version": updated["version"], "counterpartyId": counterparty_id, "principalCents": 150_000, "occurredOn": "2026-08-04", "originKind": "no_cash_movement", "accountId": null, "note": "" })),
+        Some(&cookie),
+        Some("cash-to-cashless"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(switched["originKind"], "no_cash_movement");
+    assert!(switched["account"].is_null());
+}
+
 async fn send(
     router: &Router,
     method: Method,

@@ -122,7 +122,7 @@ test("registration, ledger events, reversal and account isolation", async ({ pag
 
   await page.getByRole("button", { name: /新增债务/ }).click()
   const borrowDialog = page.getByRole("dialog", { name: "新增债务" })
-  await borrowDialog.getByLabel("联系人名称").fill("阿青")
+  await borrowDialog.getByLabel("联系人").fill("阿青")
   await borrowDialog.getByLabel("本金（元）").fill("1000")
   await chooseLedgerAccount(page, borrowDialog, "收款账户", "微信支付-测试号")
   await chooseDate(page, borrowDialog.getByLabel("发生日期"), "2026-08-02")
@@ -140,7 +140,7 @@ test("registration, ledger events, reversal and account isolation", async ({ pag
   await page.getByRole("button", { name: /新增债务/ }).click()
   const lendDialog = page.getByRole("dialog", { name: "新增债务" })
   await lendDialog.getByRole("button", { name: "借出（别人欠我）" }).click()
-  await lendDialog.getByLabel("联系人名称").fill("阿岚")
+  await lendDialog.getByLabel("联系人").fill("阿岚")
   await lendDialog.getByLabel("本金（元）").fill("2000")
   await chooseLedgerAccount(page, lendDialog, "付款账户", "微信支付-测试号")
   await chooseDate(page, lendDialog.getByLabel("发生日期"), "2026-08-02")
@@ -244,6 +244,39 @@ test("registration, ledger events, reversal and account isolation", async ({ pag
   await expect(page.getByRole("heading", { name: "暂无符合条件的债务", exact: true })).toBeVisible()
 })
 
+test("cashless debt skips the money account end to end", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes("mobile"), "full write flow runs once on desktop")
+  const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
+  await registerVerifyLogin(page, `cashless-${suffix}@example.com`)
+  await configureLedgerAccount(page, "微信支付-测试号")
+
+  await page.getByRole("button", { name: /新增债务/ }).click()
+  const createDialog = page.getByRole("dialog", { name: "新增债务" })
+  await createDialog.getByRole("button", { name: "赊账·无资金进出" }).click()
+  await expect(createDialog.getByRole("combobox", { name: "收款账户" })).toHaveCount(0)
+  await createDialog.getByLabel("联系人").fill("代办记账")
+  await createDialog.getByLabel("本金（元）").fill("1500")
+  await createDialog.getByLabel("备注").fill("代办执照+代记账尾款")
+  await createDialog.getByRole("button", { name: "保存" }).click()
+
+  const cashlessRow = page.getByRole("row", { name: /代办记账 借入/ })
+  await expect(cashlessRow.getByText("无资金进出", { exact: true })).toBeVisible()
+  await page.getByRole("button", { name: "代办记账", exact: true }).click()
+  const detail = page.locator(".debt-detail-page")
+  const history = detail.getByRole("region", { name: "债务往来记录" })
+  await expect(history.getByText("确认应付 ¥1,500.00", { exact: true })).toBeVisible()
+  await expect(history.getByText("无资金进出", { exact: true })).toBeVisible()
+
+  await detail.getByRole("button", { name: "登记往来" }).click()
+  const paymentDialog = page.getByRole("dialog", { name: "登记往来" })
+  await chooseMovementAction(page, paymentDialog, "登记还款")
+  await paymentDialog.getByLabel("还款金额（元）").fill("500")
+  await chooseLedgerAccount(page, paymentDialog, "付款账户", "微信支付-测试号")
+  await paymentDialog.getByRole("button", { name: "确认登记" }).click()
+  await expect(detail.locator(".detail-overview-card").getByText("¥1,000.00", { exact: true })).toBeVisible()
+  await expect(history.getByText("确认应付 ¥1,500.00", { exact: true })).toBeVisible()
+})
+
 test("long debt history scrolls independently from the debt summary", async ({ page }, testInfo) => {
   test.skip(testInfo.project.name.includes("mobile"), "desktop history uses an independent scroll region")
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
@@ -252,7 +285,7 @@ test("long debt history scrolls independently from the debt summary", async ({ p
 
   await page.getByRole("button", { name: /新增债务/ }).click()
   const createDialog = page.getByRole("dialog", { name: "新增债务" })
-  await createDialog.getByLabel("联系人名称").fill("滚动验收")
+  await createDialog.getByLabel("联系人").fill("滚动验收")
   await createDialog.getByLabel("本金（元）").fill("1000")
   await chooseLedgerAccount(page, createDialog, "收款账户", "微信支付-测试号")
   await createDialog.getByRole("button", { name: "保存" }).click()
