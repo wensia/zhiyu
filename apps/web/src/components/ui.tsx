@@ -4,7 +4,7 @@ import * as DropdownPrimitive from "@radix-ui/react-dropdown-menu"
 import * as SelectPrimitive from "@radix-ui/react-select"
 import * as TabsPrimitive from "@radix-ui/react-tabs"
 import * as ToastPrimitive from "@radix-ui/react-toast"
-import { CalendarIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, EllipsisIcon, EyeIcon, EyeOffIcon, XIcon } from "lucide-react"
+import { ArrowDownLeftIcon, ArrowUpRightIcon, CalendarIcon, CheckIcon, ChevronDownIcon, ChevronLeftIcon, ChevronRightIcon, EllipsisIcon, EyeIcon, EyeOffIcon, XIcon } from "lucide-react"
 import {
   createContext,
   useCallback,
@@ -29,6 +29,21 @@ type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
 
 export function Button({ variant = "outline", size = "default", className = "", type, ...props }: ButtonProps) {
   return <button className={`button button-${variant} button-size-${size} ${className}`} type={type || "button"} {...props} />
+}
+
+type DirectionTagProps = {
+  direction: "lend_out" | "borrow_in"
+  size?: "default" | "compact"
+}
+
+export function DirectionTag({ direction, size = "default" }: DirectionTagProps) {
+  const isLendOut = direction === "lend_out"
+  return (
+    <span className={`direction-tag direction-tag-${isLendOut ? "lend" : "borrow"} direction-tag-${size}`}>
+      <span className="direction-tag-icon">{isLendOut ? <ArrowUpRightIcon /> : <ArrowDownLeftIcon />}</span>
+      <span className="direction-tag-label">{isLendOut ? "借出" : "借入"}</span>
+    </span>
+  )
 }
 
 export function Field({
@@ -348,13 +363,15 @@ export function TabsContent(props: ComponentProps<typeof TabsPrimitive.Content>)
 export function ActionMenu({
   label,
   items,
+  quiet = false,
 }: {
   label: string
   items: Array<{ label: string; icon?: ReactNode; onSelect: () => void; destructive?: boolean }>
+  quiet?: boolean
 }) {
   return (
     <DropdownPrimitive.Root>
-      <DropdownPrimitive.Trigger asChild><Button aria-label={label} size="icon-sm" variant="ghost"><EllipsisIcon /></Button></DropdownPrimitive.Trigger>
+      <DropdownPrimitive.Trigger asChild><Button aria-label={label} className={quiet ? "button-quiet" : undefined} size="icon-sm" variant="ghost"><EllipsisIcon /></Button></DropdownPrimitive.Trigger>
       <DropdownPrimitive.Portal>
         <DropdownPrimitive.Content align="end" className="menu" sideOffset={4}>
           {items.map((item) => <DropdownPrimitive.Item className={item.destructive ? "menu-item-destructive" : undefined} key={item.label} onSelect={item.onSelect}>{item.icon}{item.label}</DropdownPrimitive.Item>)}

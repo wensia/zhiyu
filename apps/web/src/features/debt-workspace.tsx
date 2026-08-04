@@ -24,6 +24,7 @@ import {
   CheckboxControl,
   ConfirmDialog,
   DatePicker,
+  DirectionTag,
   Field,
   FilterSelect,
   InlineNotice,
@@ -108,7 +109,7 @@ function StatusBadge({ status }: { status: DebtStatus }) {
 }
 
 function DirectionLabel({ direction }: { direction: string }) {
-  return direction === "lend_out" ? <span className="direction lend"><ArrowUpRightIcon /> 借出</span> : <span className="direction borrow"><ArrowDownLeftIcon /> 借入</span>
+  return <DirectionTag direction={direction === "lend_out" ? "lend_out" : "borrow_in"} />
 }
 
 function MetricStrip({ summary, loading }: { summary?: Summary; loading: boolean }) {
@@ -276,7 +277,7 @@ function DebtTable({ items, loading, onOpen }: { items: Debt[]; loading: boolean
 }
 
 function RowMenu({ debt, onOpen }: { debt: Debt; onOpen: (id: string) => void }) {
-  return <div onClick={(event) => event.stopPropagation()}><ActionMenu items={[{ label: "查看与编辑", icon: <PencilIcon />, onSelect: () => onOpen(debt.id) }]} label={`操作 ${debt.counterparty.displayName}`} /></div>
+  return <div onClick={(event) => event.stopPropagation()}><ActionMenu items={[{ label: "查看与编辑", icon: <PencilIcon />, onSelect: () => onOpen(debt.id) }]} label={`操作 ${debt.counterparty.displayName}`} quiet /></div>
 }
 
 function ContactGrid({ items, loading }: { items: Counterparty[]; loading: boolean }) {
@@ -390,7 +391,7 @@ export function DebtDetailPage() {
           </div>
           <div className="detail-actions">
             {!debt.archived ? <Button className="detail-primary-action" onClick={() => setMovementOpen(true)} variant="primary"><CircleDollarSignIcon /> 登记往来</Button> : null}
-            <Button onClick={() => setEditOpen(true)}><PencilIcon /> 编辑债务</Button>
+            <Button onClick={() => setEditOpen(true)} variant="outline"><PencilIcon /> 编辑债务</Button>
             <ActionMenu label="更多债务操作" items={[
               { label: debt.archived ? "恢复债务" : "归档债务", icon: debt.archived ? <RotateCcwIcon /> : <ArchiveIcon />, onSelect: () => setConfirm("archive") },
               ...(!hasFollowUpHistory ? [{ label: "删除债务", icon: <Trash2Icon />, onSelect: () => setConfirm("delete"), destructive: true }] : []),
@@ -414,7 +415,7 @@ export function DebtDetailPage() {
         </aside>
         <div className="detail-main">
           <section className="detail-history" aria-label="债务往来记录">
-            <div className="section-heading"><div><div className="section-title-row"><h3>往来记录</h3><span>{activities.length} 条</span></div><p className="section-description">按发生日期倒序排列</p></div></div>
+            <div className="section-heading"><div><div className="section-title-row"><h3>往来记录</h3><span>{activities.length} 条</span></div></div></div>
             <ol className="timeline-list">{activities.map((activity) => activity.type === "initial" ? <InitialDebtRow debt={debt} event={activity.event} key={`initial:${activity.event.id}`} /> : activity.type === "addition" ? <DebtAdditionRow debt={debt} event={activity.event} key={`addition:${activity.event.id}`} onEdit={setEditingAddition} /> : <RepaymentRow debt={debt} event={activity.event} key={`repayment:${activity.event.id}`} onEdit={setEditingRepayment} onSaved={saved} />)}</ol>
           </section>
         </div>
@@ -584,7 +585,7 @@ function MovementTimelineRow({
           {note ? <span className="timeline-note"><span>备注：</span><span>{note}</span></span> : null}
         </div>
       </div>
-      {actions?.length && actionLabel ? <ActionMenu items={actions} label={actionLabel} /> : <span aria-hidden="true" className="timeline-action-spacer" />}
+      {actions?.length && actionLabel ? <ActionMenu items={actions} label={actionLabel} quiet /> : <span aria-hidden="true" className="timeline-action-spacer" />}
     </div>
   </li>
 }

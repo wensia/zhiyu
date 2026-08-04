@@ -287,6 +287,7 @@ function AccountTable({
             { label: account.archived ? "恢复账户" : "归档账户", icon: account.archived ? <RotateCcwIcon /> : <ArchiveIcon />, onSelect: () => onToggleArchive(account) },
           ]}
           label={`操作 ${ledgerAccountDisplayLabel(account)}`}
+          quiet
         />
       </td>
     </tr>
@@ -309,7 +310,7 @@ function AccountTable({
             <span className="fund-account-type">{ledgerAccountTypeLabel(account.accountType)}</span>
             <AccountDetails account={account} />
             {account.note ? <p>{account.note}</p> : null}
-            <div className="fund-account-card-footer"><span>关联 {account.usageCount} 笔流水</span><ActionMenu items={[{ label: "编辑账户", icon: <PencilIcon />, onSelect: () => onEdit(account) }, { label: account.archived ? "恢复账户" : "归档账户", icon: account.archived ? <RotateCcwIcon /> : <ArchiveIcon />, onSelect: () => onToggleArchive(account) }]} label={`操作 ${ledgerAccountDisplayLabel(account)}`} /></div>
+            <div className="fund-account-card-footer"><span>关联 {account.usageCount} 笔流水</span><ActionMenu items={[{ label: "编辑账户", icon: <PencilIcon />, onSelect: () => onEdit(account) }, { label: account.archived ? "恢复账户" : "归档账户", icon: account.archived ? <RotateCcwIcon /> : <ArchiveIcon />, onSelect: () => onToggleArchive(account) }]} label={`操作 ${ledgerAccountDisplayLabel(account)}`} quiet /></div>
           </article>
         ))}
       </div>
