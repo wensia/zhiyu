@@ -47,10 +47,11 @@ export function AppShell({ email }: { email: string }) {
   }, [collapsed])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "b") {
-        event.preventDefault()
-        setCollapsed((value) => !value)
-      }
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "b") return
+      const target = event.target as HTMLElement | null
+      if (target?.closest("input, textarea, select, [contenteditable='true']")) return
+      event.preventDefault()
+      setCollapsed((value) => !value)
     }
     window.addEventListener("keydown", onKeyDown)
     return () => window.removeEventListener("keydown", onKeyDown)
@@ -62,10 +63,12 @@ export function AppShell({ email }: { email: string }) {
   })
   return (
     <div className="app-shell" data-sidebar={collapsed ? "collapsed" : "expanded"}>
-      <aside className="sidebar">
+      <aside className="sidebar" id="app-sidebar">
         <div className="sidebar-header">
           <div className="brand-lockup"><span className="brand-mark"><BrandMark /></span><span className="brand-copy"><strong>知余</strong><small>个人账本</small></span></div>
           <Button
+            aria-controls="app-sidebar"
+            aria-expanded={!collapsed}
             aria-label={collapsed ? "展开侧边栏" : "折叠侧边栏"}
             onClick={() => setCollapsed((value) => !value)}
             size="icon-sm"
@@ -122,16 +125,6 @@ export function AppShell({ email }: { email: string }) {
 }
 
 export default function App() {
-  useEffect(() => {
-    const preventTabFocus = (event: KeyboardEvent) => {
-      if (event.key !== "Tab") return
-      event.preventDefault()
-      event.stopPropagation()
-    }
-    document.addEventListener("keydown", preventTabFocus, true)
-    return () => document.removeEventListener("keydown", preventTabFocus, true)
-  }, [])
-
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
