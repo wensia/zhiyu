@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>知余</title>
+  <g id="icon">
+    <rect x="36" y="36" width="440" height="440" rx="96" fill="#B6533C"/>
+    <polyline points="112,336 232,336 232,240 344,240 344,144 400,144" fill="none" stroke="#FBFAF8" stroke-width="88" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>

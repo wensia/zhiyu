@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>知余 Logo 预览 — 10 款概念（5 个 skill × 2）</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    padding: 2rem;
+    transition: background-color 0.3s, color 0.3s;
+  }
+  body.light { background: #f5f5f5; color: #333; }
+  body.dark { background: #1a1a1a; color: #eee; }
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+  }
+  h1 { font-size: 1.5rem; font-weight: 600; }
+  h2 { font-size: 1.1rem; font-weight: 600; margin: 2.5rem 0 1rem; }
+  .toggle {
+    padding: 0.5rem 1rem;
+    border: 1px solid currentColor;
+    border-radius: 6px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 0.875rem;
+  }
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.5rem;
+  }
+  .card {
+    border: 1px solid rgba(128, 128, 128, 0.3);
+    border-radius: 12px;
+    overflow: hidden;
+  }
+  .card-img {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2rem;
+    min-height: 240px;
+  }
+  body.light .card-img { background: #fff; }
+  body.dark .card-img { background: #2a2a2a; }
+  .card-img img {
+    max-width: 100%;
+    max-height: 200px;
+  }
+  .card-label {
+    padding: 0.75rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 500;
+    border-top: 1px solid rgba(128, 128, 128, 0.3);
+  }
+  .card-label small { display: block; font-weight: 400; opacity: 0.65; margin-top: 0.25rem; }
+  body.light .card-label { background: #fafafa; }
+  body.dark .card-label { background: #222; }
+  .prompt-card pre {
+    padding: 1rem;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 240px;
+    overflow: auto;
+  }
+  body.light .prompt-card pre { background: #fff; }
+  body.dark .prompt-card pre { background: #2a2a2a; }
+</style>
+</head>
+<body class="light">
+  <div class="header">
+    <h1>知余 Logo 预览 — 5 个 skill × 2 款</h1>
+    <button class="toggle" onclick="document.body.classList.toggle('dark'); document.body.classList.toggle('light'); this.textContent = document.body.classList.contains('dark') ? '☀️ Light' : '🌙 Dark';">🌙 Dark</button>
+  </div>
+
+  <h2>① logo-designer skill</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="card-img"><img src="concepts/logo-designer-1.svg" alt="logo-designer-1"></div>
+      <div class="card-label">logo-designer-1 · 现代几何「余」字标<small>「余」拆为屋顶 + 两横 + 竖钩 4 个粗几何笔画，赤陶单色，印章感负空间。</small></div>
+    </div>
+    <div class="card">
+      <div class="card-img"><img src="concepts/logo-designer-2.svg" alt="logo-designer-2"></div>
+      <div class="card-label">logo-designer-2 · 结余刻度<small>墨色账本基线 + 三根错落上扬的赤陶竖条，暗示剩余水位。</small></div>
+    </div>
+  </div>
+
+  <h2>② generate-logo skill（ImageRouter API · 待 API key）</h2>
+  <div class="grid">
+    <div class="card prompt-card">
+      <pre>prompt-a — 赤陶账本方块 + 负空间上扬台阶
+文件：generate-logo/prompt-a.txt
+设置 IMAGEROUTER_API_KEY 后按 generate-logo/README.md 一键生成 PNG。</pre>
+      <div class="card-label">generate-logo A · 结余台阶 app icon</div>
+    </div>
+    <div class="card prompt-card">
+      <pre>prompt-b — 墨色方孔钱圆环 + 赤陶圆点余量
+文件：generate-logo/prompt-b.txt
+模型 google/nano-banana-2，1024×1024 PNG。</pre>
+      <div class="card-label">generate-logo B · 方孔钱余量</div>
+    </div>
+  </div>
+
+  <h2>③ brand-identity skill（策略陈述：笃定、安定、有余）</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="card-img"><img src="concepts/brand-identity-1.svg" alt="brand-identity-1"></div>
+      <div class="card-label">brand-identity-1 · 定制字标<small>「知余」600 粗字标 + 余字下方一条右端上扬的粗弧线（结余上扬）。</small></div>
+    </div>
+    <div class="card">
+      <div class="card-img"><img src="concepts/brand-identity-2.svg" alt="brand-identity-2"></div>
+      <div class="card-label">brand-identity-2 · 方孔钱 + 字标竖向组合<small>外圆内方的现代方孔钱符号（evenodd 镂空），下配墨色「知余」。</small></div>
+    </div>
+  </div>
+
+  <h2>④ branding skill（smallest-first · simple marks last）</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="card-img"><img src="concepts/branding-1.svg" alt="branding-1"></div>
+      <div class="card-label">branding-1 · 阶梯结余图标<small>赤陶圆角方块 + 米白负空间两级上扬阶梯，为 16px 而生的两色块设计。</small></div>
+    </div>
+    <div class="card">
+      <div class="card-img"><img src="concepts/branding-2.svg" alt="branding-2"></div>
+      <div class="card-label">branding-2 · 缺口圆环 timeless mark<small>单色墨：右上方断开的粗圆环 + 断口间悬浮圆点，闭环账目中的余量。</small></div>
+    </div>
+  </div>
+
+  <h2>⑤ marketing-visual-design skill（生产规格 · QA 通过）</h2>
+  <div class="grid">
+    <div class="card">
+      <div class="card-img"><img src="concepts/marketing-1.svg" alt="marketing-1"></div>
+      <div class="card-label">marketing-1 · App 图标 badge<small>满幅赤陶圆角底板 + 白色极简几何「余」，安全留白 ≥15%。</small></div>
+    </div>
+    <div class="card">
+      <div class="card-img"><img src="concepts/marketing-2.svg" alt="marketing-2"></div>
+      <div class="card-label">marketing-2 · 横向组合标识（1024×512）<small>社交封面/邮件头用：阶梯图标 +「知余」+ 中英副标题。</small></div>
+    </div>
+  </div>
+
+  <h2>Favicon 尺寸检查（64 / 32 / 16px）</h2>
+  <div style="display:flex;gap:2rem;flex-wrap:wrap;align-items:end;">
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">logo-designer-1</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/logo-designer-1.svg" width="64" height="64"><div style="font-size:0.75rem;opacity:0.6;">64px</div></div>
+        <div><img src="concepts/logo-designer-1.svg" width="32" height="32"><div style="font-size:0.75rem;opacity:0.6;">32px</div></div>
+        <div><img src="concepts/logo-designer-1.svg" width="16" height="16"><div style="font-size:0.75rem;opacity:0.6;">16px</div></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">logo-designer-2</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/logo-designer-2.svg" width="64" height="64"><div style="font-size:0.75rem;opacity:0.6;">64px</div></div>
+        <div><img src="concepts/logo-designer-2.svg" width="32" height="32"><div style="font-size:0.75rem;opacity:0.6;">32px</div></div>
+        <div><img src="concepts/logo-designer-2.svg" width="16" height="16"><div style="font-size:0.75rem;opacity:0.6;">16px</div></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">brand-identity-1</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/brand-identity-1.svg" width="64" height="64"><div style="font-size:0.75rem;opacity:0.6;">64px</div></div>
+        <div><img src="concepts/brand-identity-1.svg" width="32" height="32"><div style="font-size:0.75rem;opacity:0.6;">32px</div></div>
+        <div><img src="concepts/brand-identity-1.svg" width="16" height="16"><div style="font-size:0.75rem;opacity:0.6;">16px</div></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">brand-identity-2</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/brand-identity-2.svg" width="64" height="64"><div style="font-size:0.75rem;opacity:0.6;">64px</div></div>
+        <div><img src="concepts/brand-identity-2.svg" width="32" height="32"><div style="font-size:0.75rem;opacity:0.6;">32px</div></div>
+        <div><img src="concepts/brand-identity-2.svg" width="16" height="16"><div style="font-size:0.75rem;opacity:0.6;">16px</div></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">branding-1</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/branding-1.svg" width="64" height="64"><div style="font-size:0.75rem;opacity:0.6;">64px</div></div>
+        <div><img src="concepts/branding-1.svg" width="32" height="32"><div style="font-size:0.75rem;opacity:0.6;">32px</div></div>
+        <div><img src="concepts/branding-1.svg" width="16" height="16"><div style="font-size:0.75rem;opacity:0.6;">16px</div></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">branding-2</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/branding-2.svg" width="64" height="64"><div style="font-size:0.75rem;opacity:0.6;">64px</div></div>
+        <div><img src="concepts/branding-2.svg" width="32" height="32"><div style="font-size:0.75rem;opacity:0.6;">32px</div></div>
+        <div><img src="concepts/branding-2.svg" width="16" height="16"><div style="font-size:0.75rem;opacity:0.6;">16px</div></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">marketing-1</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/marketing-1.svg" width="64" height="64"><div style="font-size:0.75rem;opacity:0.6;">64px</div></div>
+        <div><img src="concepts/marketing-1.svg" width="32" height="32"><div style="font-size:0.75rem;opacity:0.6;">32px</div></div>
+        <div><img src="concepts/marketing-1.svg" width="16" height="16"><div style="font-size:0.75rem;opacity:0.6;">16px</div></div>
+      </div>
+    </div>
+    <div style="display:flex;flex-direction:column;align-items:center;gap:0.5rem;">
+      <div style="font-size:0.8rem;font-weight:500;">marketing-2</div>
+      <div style="display:flex;gap:1rem;align-items:end;">
+        <div><img src="concepts/marketing-2.svg" width="128" height="64"><div style="font-size:0.75rem;opacity:0.6;">128×64</div></div>
+        <div><img src="concepts/marketing-2.svg" width="64" height="32"><div style="font-size:0.75rem;opacity:0.6;">64×32</div></div>
+      </div>
+    </div>
+  </div>
+</body>
+</html>

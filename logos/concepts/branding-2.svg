@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>知余</title>
+  <g id="icon" fill="none" stroke="#2F2F2F">
+    <path d="M 413 186 A 172 172 0 1 1 326 99" stroke-width="56"/>
+    <circle cx="378" cy="134" r="48" fill="#2F2F2F" stroke="none"/>
+  </g>
+</svg>

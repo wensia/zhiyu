@@ -1,0 +1,9 @@
+模型建议：google/nano-banana-2，quality: high，size: 1024x1024，output_format: png
+
+A modern, minimal logo icon for "知余" (zhiyu), a personal debt-tracking app.
+Abstract reinterpretation of a Chinese square-holed coin: a bold outer ring in
+deep warm ink (#2F2F2F) with a small square hole offset toward the bottom, and
+a single terracotta clay (#B6533C) dot resting in the opening like a remaining
+balance. Flat vector style, generous whitespace, off-white paper background
+(#FBFAF8). Geometric, timeless, no gradients, no text, no letters. Must stay
+legible as a 16px favicon. Quiet, trustworthy, modern Chinese craft aesthetic.

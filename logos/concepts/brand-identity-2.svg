@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>知余</title>
+  <g id="icon">
+    <path fill="#B6533C" fill-rule="evenodd" d="M256 100a90 90 0 1 0 0 180 90 90 0 0 0 0-180ZM224 158h64v64h-64v-64Z"/>
+  </g>
+  <g id="wordmark">
+    <text x="256" y="385" text-anchor="middle" font-family="'Noto Sans SC','PingFang SC',sans-serif" font-size="96" font-weight="600" fill="#2F2F2F">知余</text>
+  </g>
+</svg>

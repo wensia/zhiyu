@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>知余</title>
+  <g id="icon">
+    <g id="bars" stroke="#B6533C" stroke-width="48" stroke-linecap="round">
+      <line x1="150" y1="336" x2="150" y2="216"/>
+      <line x1="256" y1="336" x2="256" y2="264"/>
+      <line x1="362" y1="336" x2="362" y2="152"/>
+    </g>
+    <line id="baseline" x1="84" y1="384" x2="428" y2="384" stroke="#2F2F2F" stroke-width="44" stroke-linecap="round"/>
+  </g>
+</svg>

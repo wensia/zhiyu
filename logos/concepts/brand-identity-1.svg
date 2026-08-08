@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>知余</title>
+  <g id="wordmark">
+    <text x="256" y="330" text-anchor="middle" font-family="'Noto Sans SC','PingFang SC',sans-serif" font-size="200" font-weight="600" fill="#B6533C">知余</text>
+    <path d="M 296 408 Q 356 442 428 388" fill="none" stroke="#B6533C" stroke-width="32" stroke-linecap="round"/>
+  </g>
+</svg>

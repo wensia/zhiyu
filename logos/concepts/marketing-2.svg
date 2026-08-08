@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 512">
+  <title>知余</title>
+  <rect width="1024" height="512" fill="#FBFAF8"/>
+  <g id="icon">
+    <rect x="72" y="128" width="256" height="256" rx="48" fill="#B6533C"/>
+    <polyline points="112,340 160,340 160,296 208,296 208,252 256,252 256,208 296,208" fill="none" stroke="#FFFFFF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+  <g id="wordmark" font-family="'Noto Sans SC','PingFang SC',sans-serif">
+    <text x="392" y="264" font-size="120" font-weight="600" fill="#2F2F2F">知余</text>
+    <text x="396" y="324" font-size="28" font-weight="400" letter-spacing="2" fill="#6B6560">个人债务管理 PERSONAL DEBT LEDGER</text>
+  </g>
+</svg>

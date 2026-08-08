@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <title>知余</title>
+  <g id="icon" fill="none" stroke="#B6533C" stroke-width="42" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M 118 206 L 256 108 L 394 206"/>
+    <path d="M 150 285 L 362 285"/>
+    <path d="M 178 356 L 334 356"/>
+    <path d="M 256 246 L 256 386 Q 256 418 222 418"/>
+  </g>
+</svg>

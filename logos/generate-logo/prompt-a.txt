@@ -1,0 +1,11 @@
+模型建议：google/nano-banana-2，quality: high，size: 1024x1024，output_format: png
+
+A premium, minimal app icon logo for "知余" (zhiyu), a personal debt-management
+app whose name means "knowing what remains". A single abstract geometric mark:
+a rounded square ledger tile in warm terracotta clay (#B6533C), with a bold
+negative-space notch rising like a small ascending step — the feeling of a
+balance that remains. Inspired by Apple minimalism and Muji restraint: quiet,
+warm, trustworthy personal-finance aesthetic. Solid flat color, subtle warm
+paper background (#FBFAF8). No text. No letters. Pure abstract mark. Clean
+enough to read at 16px favicon size. Luxurious but understated, modern Chinese
+fintech feel.
