@@ -1,0 +1,13 @@
+.git
+.factory
+.env
+.env.*
+!.env.example
+node_modules
+target
+var
+apps/web/dist
+coverage
+playwright-report
+test-results
+.DS_Store
