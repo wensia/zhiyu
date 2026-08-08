@@ -55,8 +55,11 @@ kill_all() {
   fi
 
   # 2. Kill all zhiyu-related dev root processes (pnpm dev, concurrently).
+  # Skip this script and its caller: a shell invoked as `dev.sh stop; pnpm dev`
+  # carries "pnpm dev" in its own command line and would otherwise kill itself.
   local pids
-  pids=$(ps aux | grep -E "pnpm dev|concurrently.*zhiyu" | grep -v grep | awk '{print $2}' || true)
+  pids=$(ps aux | grep -E "pnpm dev|concurrently.*zhiyu" | grep -v grep | awk '{print $2}' \
+    | grep -vxE "$$|$PPID" || true)
   if [[ -n "$pids" ]]; then
     echo "$pids" | xargs kill -9 2>/dev/null || true
     killed=1
