@@ -613,12 +613,30 @@ export function TransactionWorkspace() {
     queryClient.invalidateQueries({ queryKey: ["ledger-accounts"] }),
   ])
 
-  const deleteMutation = useMutation({
-    mutationFn: (transaction: LedgerTransaction) => api.deleteTransaction(transaction.id, transaction.version),
+  const restoreMutation = useMutation({
+    mutationFn: (transaction: Pick<LedgerTransaction, "id" | "version">) =>
+      api.restoreTransaction(transaction.id, transaction.version),
     onSuccess: async () => {
       await refresh()
+      toast({ title: "已撤销删除", type: "success" })
+    },
+    onError: async (cause) => {
+      await refresh()
+      toast({ title: "撤销失败", description: cause.message, type: "error" })
+    },
+  })
+
+  const deleteMutation = useMutation({
+    mutationFn: (transaction: LedgerTransaction) => api.deleteTransaction(transaction.id, transaction.version),
+    onSuccess: async (_result, transaction) => {
+      await refresh()
       setDeleting(undefined)
-      toast({ title: "记账已删除", type: "success" })
+      toast({
+        title: "记账已删除",
+        type: "success",
+        // Deleting bumps the optimistic-lock version, so restoring targets version + 1.
+        action: { label: "撤销", onSelect: () => restoreMutation.mutate({ id: transaction.id, version: transaction.version + 1 }) },
+      })
     },
     onError: async (cause) => {
       setDeleting(undefined)
@@ -699,7 +717,7 @@ export function TransactionWorkspace() {
       />
       <ConfirmDialog
         confirmLabel="确认删除"
-        description="删除后该笔记账将归档，不再计入统计与账户余额，可通过恢复找回。"
+        description="删除后不再计入统计与账户余额。删除完成后可在提示中撤销。"
         onConfirm={() => deleting && deleteMutation.mutate(deleting)}
         onOpenChange={(open) => !open && setDeleting(undefined)}
         open={Boolean(deleting)}

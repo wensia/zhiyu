@@ -732,6 +732,8 @@ type ToastMessage = {
   title: string
   description?: string
   type?: "info" | "success" | "error"
+  /** Undo-style follow-up; the toast stays longer so the action stays reachable. */
+  action?: { label: string; onSelect: () => void }
 }
 
 type ToastItem = ToastMessage & { id: number }
@@ -749,6 +751,7 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
         {items.map((item) => (
           <ToastPrimitive.Root
             className={`toast toast-${item.type || "info"}`}
+            duration={item.action ? 8000 : undefined}
             key={item.id}
             onOpenChange={(open) => {
               if (!open) setItems((current) => current.filter((entry) => entry.id !== item.id))
@@ -759,6 +762,11 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
               <ToastPrimitive.Title>{item.title}</ToastPrimitive.Title>
               {item.description ? <ToastPrimitive.Description>{item.description}</ToastPrimitive.Description> : null}
             </div>
+            {item.action ? (
+              <ToastPrimitive.Action altText={item.action.label} asChild>
+                <Button onClick={item.action.onSelect} size="sm" variant="outline">{item.action.label}</Button>
+              </ToastPrimitive.Action>
+            ) : null}
             <ToastPrimitive.Close asChild><Button aria-label="关闭通知" size="icon-sm" variant="ghost"><XIcon /></Button></ToastPrimitive.Close>
           </ToastPrimitive.Root>
         ))}

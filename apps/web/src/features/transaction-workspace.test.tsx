@@ -212,11 +212,26 @@ describe("TransactionWorkspace", () => {
     await user.click(await screen.findByRole("button", { name: "操作 餐饮 ¥12.34" }))
     await user.click(screen.getByRole("menuitem", { name: "删除" }))
     const dialog = await screen.findByRole("alertdialog")
-    expect(within(dialog).getByText(/删除后该笔记账将归档/)).toBeInTheDocument()
+    expect(within(dialog).getByText(/删除后不再计入统计与账户余额/)).toBeInTheDocument()
     vi.mocked(api.deleteTransaction).mockResolvedValue(undefined)
     await user.click(within(dialog).getByRole("button", { name: "确认删除" }))
     await waitFor(() => expect(api.deleteTransaction).toHaveBeenCalledWith("tx-2", 3))
     expect(await screen.findByText("记账已删除")).toBeInTheDocument()
+  })
+
+  it("undoes a delete from the toast action", async () => {
+    const user = userEvent.setup()
+    renderWorkspace()
+    if (day2 !== today) await user.click(await screen.findByRole("button", { name: new RegExp(`^${day2}，`) }))
+    await user.click(await screen.findByRole("button", { name: "操作 餐饮 ¥12.34" }))
+    await user.click(screen.getByRole("menuitem", { name: "删除" }))
+    vi.mocked(api.deleteTransaction).mockResolvedValue(undefined)
+    vi.mocked(api.restoreTransaction).mockResolvedValue(expenseItem)
+    await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "确认删除" }))
+    await user.click(await screen.findByRole("button", { name: "撤销" }))
+    // Deleting bumps the version from 3 to 4, so the restore must target 4.
+    await waitFor(() => expect(api.restoreTransaction).toHaveBeenCalledWith("tx-2", 4))
+    expect(await screen.findByText("已撤销删除")).toBeInTheDocument()
   })
 
   it("surfaces a version conflict inside the form modal", async () => {
