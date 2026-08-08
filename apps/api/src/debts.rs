@@ -1117,7 +1117,7 @@ async fn ensure_counterparty(conn: &Connection, user_id: &str, id: &str) -> Resu
     Ok(())
 }
 
-async fn ensure_active_ledger_account_if_present(
+pub(crate) async fn ensure_active_ledger_account_if_present(
     conn: &Connection,
     user_id: &str,
     id: Option<&str>,

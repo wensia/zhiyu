@@ -1523,6 +1523,602 @@ async fn cashless_debts_skip_the_principal_account_but_repayments_keep_theirs() 
     assert!(switched["account"].is_null());
 }
 
+#[tokio::test]
+async fn transaction_flow_is_idempotent_versioned_and_user_scoped() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("tx-first@example.com").await;
+    let account = test
+        .create_ledger_account(&cookie, "微信支付-记账流程", "wechat_balance")
+        .await;
+    let account_id = account["id"].as_str().unwrap();
+
+    let create_body = json!({
+        "kind": "expense",
+        "amountCents": 1234,
+        "occurredOn": "2026-08-03",
+        "category": "餐饮",
+        "accountId": account_id,
+        "note": "午饭"
+    });
+    let (status, _, created) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/transactions",
+        Some(create_body.clone()),
+        Some(&cookie),
+        Some("create-tx-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(created["kind"], "expense");
+    assert_eq!(created["amountCents"], 1234);
+    assert_eq!(created["account"]["id"], account_id);
+    assert_eq!(created["account"]["accountType"], "wechat_balance");
+    assert_eq!(created["version"], 1);
+    let transaction_id = created["id"].as_str().unwrap().to_owned();
+
+    // 幂等重放：同 key 同 body → 同响应；同 key 不同 body → 409
+    let (status, _, replayed) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/transactions",
+        Some(create_body),
+        Some(&cookie),
+        Some("create-tx-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(replayed["id"], transaction_id);
+    let (status, _, mismatch) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/transactions",
+        Some(json!({ "kind": "expense", "amountCents": 999, "occurredOn": "2026-08-03" })),
+        Some(&cookie),
+        Some("create-tx-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(mismatch["code"], "idempotency_mismatch");
+
+    let (status, _, income) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/transactions",
+        Some(json!({ "kind": "income", "amountCents": 500000, "occurredOn": "2026-08-01", "category": "工资" })),
+        Some(&cookie),
+        Some("create-tx-0002"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert!(income["account"].is_null());
+
+    // 过滤：month / kind / category
+    let (status, _, list) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions?month=2026-08",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list["total"], 2);
+    let (_, _, empty_month) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions?month=2026-07",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(empty_month["total"], 0);
+    let (_, _, expense_only) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions?month=2026-08&kind=expense",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(expense_only["total"], 1);
+    let (_, _, by_category) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions?category=%E9%A4%90%E9%A5%AE",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(by_category["total"], 1);
+
+    // 乐观锁：旧 version → 409；正确 version → 200 且 version + 1
+    let (status, _, conflict) = send(
+        &test.router,
+        Method::PATCH,
+        &format!("/api/v1/transactions/{transaction_id}"),
+        Some(json!({ "version": 99, "kind": "expense", "amountCents": 2000, "occurredOn": "2026-08-03", "category": "餐饮", "accountId": account_id })),
+        Some(&cookie),
+        Some("update-tx-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(conflict["code"], "version_conflict");
+    let (status, _, updated) = send(
+        &test.router,
+        Method::PATCH,
+        &format!("/api/v1/transactions/{transaction_id}"),
+        Some(json!({ "version": 1, "kind": "expense", "amountCents": 2000, "occurredOn": "2026-08-04", "category": "餐饮", "accountId": account_id, "note": "改期" })),
+        Some(&cookie),
+        Some("update-tx-0002"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(updated["amountCents"], 2000);
+    assert_eq!(updated["occurredOn"], "2026-08-04");
+    assert_eq!(updated["version"], 2);
+
+    // 软删 → 列表消失 → 恢复
+    let (status, _, _) = send(
+        &test.router,
+        Method::DELETE,
+        &format!("/api/v1/transactions/{transaction_id}"),
+        Some(json!({ "version": 2 })),
+        Some(&cookie),
+        Some("delete-tx-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    let (status, _, conflict) = send(
+        &test.router,
+        Method::DELETE,
+        &format!("/api/v1/transactions/{transaction_id}"),
+        Some(json!({ "version": 2 })),
+        Some(&cookie),
+        Some("delete-tx-0002"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CONFLICT);
+    assert_eq!(conflict["code"], "version_conflict");
+    let (_, _, after_delete) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions?month=2026-08",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(after_delete["total"], 1);
+    let (status, _, restored) = send(
+        &test.router,
+        Method::POST,
+        &format!("/api/v1/transactions/{transaction_id}/restore"),
+        Some(json!({ "version": 3 })),
+        Some(&cookie),
+        Some("restore-tx-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(restored["archived"], false);
+
+    // 多用户隔离
+    let cookie2 = test.register_and_login("tx-second@example.com").await;
+    let (_, _, other_list) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions?month=2026-08",
+        None,
+        Some(&cookie2),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(other_list["total"], 0);
+    let (status, _, _) = send(
+        &test.router,
+        Method::PATCH,
+        &format!("/api/v1/transactions/{transaction_id}"),
+        Some(json!({ "version": 4, "kind": "expense", "amountCents": 1, "occurredOn": "2026-08-04" })),
+        Some(&cookie2),
+        Some("update-tx-other"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+
+    // 校验：金额 / 日期 / 分类 / 已归档账户
+    for (body, label) in [
+        (
+            json!({ "kind": "expense", "amountCents": 0, "occurredOn": "2026-08-03" }),
+            "amount",
+        ),
+        (
+            json!({ "kind": "expense", "amountCents": MAX_SAFE_CENTS + 1, "occurredOn": "2026-08-03" }),
+            "amount-max",
+        ),
+        (
+            json!({ "kind": "expense", "amountCents": 100, "occurredOn": "2026-13-40" }),
+            "date",
+        ),
+        (
+            json!({ "kind": "expense", "amountCents": 100, "occurredOn": "2026-08-03", "category": "长".repeat(61) }),
+            "category",
+        ),
+    ] {
+        let (status, _, _) = send(
+            &test.router,
+            Method::POST,
+            "/api/v1/transactions",
+            Some(body),
+            Some(&cookie),
+            Some(&format!("invalid-tx-{label}")),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "case {label}");
+    }
+    let (status, _, archived_account) = send(
+        &test.router,
+        Method::POST,
+        &format!("/api/v1/ledger-accounts/{account_id}/archive"),
+        Some(json!({ "version": account["version"] })),
+        Some(&cookie),
+        Some("archive-account-tx"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(archived_account["archived"], true);
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/transactions",
+        Some(json!({ "kind": "expense", "amountCents": 100, "occurredOn": "2026-08-03", "accountId": account_id })),
+        Some(&cookie),
+        Some("create-tx-archived-account"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+}
+
+#[tokio::test]
+async fn transaction_summary_aggregates_daily_by_category_and_excludes_archived() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("tx-summary@example.com").await;
+
+    let entries = [
+        (
+            "create-sum-0001",
+            json!({ "kind": "income", "amountCents": 5000, "occurredOn": "2026-08-01", "category": "工资" }),
+        ),
+        (
+            "create-sum-0002",
+            json!({ "kind": "expense", "amountCents": 1200, "occurredOn": "2026-08-01", "category": "餐饮" }),
+        ),
+        (
+            "create-sum-0003",
+            json!({ "kind": "expense", "amountCents": 300, "occurredOn": "2026-08-02", "category": "餐饮" }),
+        ),
+        (
+            "create-sum-0004",
+            json!({ "kind": "expense", "amountCents": 800, "occurredOn": "2026-08-02", "category": "交通" }),
+        ),
+        (
+            "create-sum-0005",
+            json!({ "kind": "expense", "amountCents": 100, "occurredOn": "2026-08-10", "category": "餐饮" }),
+        ),
+    ];
+    let mut archived_id = String::new();
+    let mut archived_version = 0_i64;
+    for (key, body) in entries {
+        let (status, _, created) = send(
+            &test.router,
+            Method::POST,
+            "/api/v1/transactions",
+            Some(body),
+            Some(&cookie),
+            Some(key),
+            true,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        if key == "create-sum-0005" {
+            archived_id = created["id"].as_str().unwrap().to_owned();
+            archived_version = created["version"].as_i64().unwrap();
+        }
+    }
+    let (status, _, _) = send(
+        &test.router,
+        Method::DELETE,
+        &format!("/api/v1/transactions/{archived_id}"),
+        Some(json!({ "version": archived_version })),
+        Some(&cookie),
+        Some("delete-sum-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+
+    let (status, _, summary) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions/summary?month=2026-08",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(summary["month"], "2026-08");
+    assert_eq!(summary["incomeCents"], 5000);
+    assert_eq!(summary["expenseCents"], 2300);
+    assert_eq!(summary["netCents"], 2700);
+    assert_eq!(summary["transactionCount"], 4);
+
+    let days = summary["days"].as_array().unwrap();
+    assert_eq!(days.len(), 2);
+    assert_eq!(days[0]["date"], "2026-08-01");
+    assert_eq!(days[0]["incomeCents"], 5000);
+    assert_eq!(days[0]["expenseCents"], 1200);
+    assert_eq!(days[1]["date"], "2026-08-02");
+    assert_eq!(days[1]["incomeCents"], 0);
+    assert_eq!(days[1]["expenseCents"], 1100);
+
+    let by_category = summary["byCategory"].as_array().unwrap();
+    assert_eq!(by_category.len(), 3);
+    assert_eq!(by_category[0]["category"], "餐饮");
+    assert_eq!(by_category[0]["expenseCents"], 1500);
+    assert_eq!(by_category[0]["count"], 2);
+    assert_eq!(by_category[1]["category"], "交通");
+    assert_eq!(by_category[1]["expenseCents"], 800);
+    assert_eq!(by_category[2]["category"], "工资");
+    assert_eq!(by_category[2]["incomeCents"], 5000);
+
+    // 分类联想：已归档条目的分类仍在（餐饮还有其他条目），独立分类仅来自未归档条目
+    let (status, _, categories) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions/categories",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(categories, json!(["交通", "工资", "餐饮"]));
+
+    // month 参数缺失/非法
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/transactions/summary",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    for month in ["2026-13", "2026-8"] {
+        let (status, _, body) = send(
+            &test.router,
+            Method::GET,
+            &format!("/api/v1/transactions/summary?month={month}"),
+            None,
+            Some(&cookie),
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "month {month}");
+        assert_eq!(body["code"], "validation_error");
+    }
+}
+
+#[tokio::test]
+async fn account_balance_reflects_transactions_and_debt_cash_movements() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("tx-balance@example.com").await;
+
+    async fn balance_of(test: &TestApp, cookie: &str, account_id: &str) -> i64 {
+        let (status, _, accounts) = send(
+            &test.router,
+            Method::GET,
+            "/api/v1/ledger-accounts",
+            None,
+            Some(cookie),
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        accounts
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|account| account["id"] == account_id)
+            .unwrap()["balanceCents"]
+            .as_i64()
+            .unwrap()
+    }
+
+    // 初始余额 100.00
+    let (status, _, account) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "招商银行-余额联动", "accountType": "bank_card", "openingBalanceCents": 10000 })),
+        Some(&cookie),
+        Some("create-balance-account"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let account_id = account["id"].as_str().unwrap().to_owned();
+    assert_eq!(account["balanceCents"], 10000);
+    assert_eq!(account["openingBalanceCents"], 10000);
+    let (status, _, second) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "现金-余额联动", "accountType": "cash" })),
+        Some(&cookie),
+        Some("create-balance-account-2"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    let second_id = second["id"].as_str().unwrap().to_owned();
+
+    // 收入 +5000 → 15000；支出 -1200 → 13800
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/transactions",
+        Some(json!({ "kind": "income", "amountCents": 5000, "occurredOn": "2026-08-01", "category": "工资", "accountId": account_id })),
+        Some(&cookie),
+        Some("balance-tx-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 15000);
+
+    let (status, _, expense) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/transactions",
+        Some(json!({ "kind": "expense", "amountCents": 1200, "occurredOn": "2026-08-02", "category": "餐饮", "accountId": account_id })),
+        Some(&cookie),
+        Some("balance-tx-0002"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 13800);
+    let expense_id = expense["id"].as_str().unwrap().to_owned();
+
+    // 改金额 1200 → 2000：13000；改账户 → 原账户 15000、新账户 -2000
+    let (status, _, _) = send(
+        &test.router,
+        Method::PATCH,
+        &format!("/api/v1/transactions/{expense_id}"),
+        Some(json!({ "version": 1, "kind": "expense", "amountCents": 2000, "occurredOn": "2026-08-02", "category": "餐饮", "accountId": account_id })),
+        Some(&cookie),
+        Some("balance-tx-0003"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 13000);
+    let (status, _, _) = send(
+        &test.router,
+        Method::PATCH,
+        &format!("/api/v1/transactions/{expense_id}"),
+        Some(json!({ "version": 2, "kind": "expense", "amountCents": 2000, "occurredOn": "2026-08-02", "category": "餐饮", "accountId": second_id })),
+        Some(&cookie),
+        Some("balance-tx-0004"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 15000);
+    assert_eq!(balance_of(&test, &cookie, &second_id).await, -2000);
+
+    // 归档支出 → 新账户回滚为 0
+    let (status, _, _) = send(
+        &test.router,
+        Method::DELETE,
+        &format!("/api/v1/transactions/{expense_id}"),
+        Some(json!({ "version": 3 })),
+        Some(&cookie),
+        Some("balance-tx-0005"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::NO_CONTENT);
+    assert_eq!(balance_of(&test, &cookie, &second_id).await, 0);
+
+    // 债务现金流水：借出 10000 → 5000；还款 3000 → 8000；冲正 → 回到 5000
+    let (status, _, debt) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/debts",
+        Some(json!({ "direction": "lend_out", "counterpartyName": "阿青", "principalCents": 10000, "occurredOn": "2026-08-03", "accountId": account_id })),
+        Some(&cookie),
+        Some("balance-debt-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(debt["originKind"], "cash_movement");
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 5000);
+    let debt_id = debt["id"].as_str().unwrap().to_owned();
+
+    let (status, _, paid) = send(
+        &test.router,
+        Method::POST,
+        &format!("/api/v1/debts/{debt_id}/repayments"),
+        Some(json!({ "amountCents": 3000, "effectiveOn": "2026-08-04", "accountId": account_id })),
+        Some(&cookie),
+        Some("balance-repay-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 8000);
+    let payment_id = paid["repayments"][0]["id"].as_str().unwrap().to_owned();
+
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        &format!("/api/v1/repayments/{payment_id}/reversals"),
+        Some(json!({ "effectiveOn": "2026-08-05", "note": "录入错误" })),
+        Some(&cookie),
+        Some("balance-reverse-0001"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 5000);
+
+    // 无资金进出的债务不影响余额
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/debts",
+        Some(json!({ "direction": "borrow_in", "counterpartyName": "代办记账", "principalCents": 99900, "occurredOn": "2026-08-04", "originKind": "no_cash_movement", "accountId": null })),
+        Some(&cookie),
+        Some("balance-debt-0002"),
+        true,
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+    assert_eq!(balance_of(&test, &cookie, &account_id).await, 5000);
+}
+
 async fn send(
     router: &Router,
     method: Method,

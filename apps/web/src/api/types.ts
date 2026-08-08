@@ -28,3 +28,14 @@ export type UpdateRepaymentInput = components["schemas"]["UpdateRepaymentRequest
 export type ReverseRepaymentInput = components["schemas"]["ReverseRepaymentRequest"]
 export type CreateLedgerAccountInput = components["schemas"]["CreateLedgerAccountRequest"]
 export type UpdateLedgerAccountInput = components["schemas"]["UpdateLedgerAccountRequest"]
+export type TransactionKind = components["schemas"]["TransactionKind"]
+type GeneratedTransaction = components["schemas"]["LedgerTransactionView"]
+export type LedgerTransaction = Omit<GeneratedTransaction, "account"> & { account: LedgerAccountRef | null }
+export type TransactionList = Omit<components["schemas"]["TransactionListResponse"], "items"> & {
+  items: LedgerTransaction[]
+}
+export type TransactionDaySummary = components["schemas"]["TransactionDaySummary"]
+export type TransactionCategorySummary = components["schemas"]["TransactionCategorySummary"]
+export type TransactionMonthSummary = components["schemas"]["TransactionMonthSummary"]
+export type CreateTransactionInput = components["schemas"]["CreateTransactionRequest"]
+export type UpdateTransactionInput = components["schemas"]["UpdateTransactionRequest"]

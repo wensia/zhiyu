@@ -4,15 +4,20 @@ import type {
   CreateDebtInput,
   CreateLedgerAccountInput,
   CreateRepaymentInput,
+  CreateTransactionInput,
   Debt,
   DebtList,
   LedgerAccount,
+  LedgerTransaction,
   ReverseRepaymentInput,
   Summary,
+  TransactionList,
+  TransactionMonthSummary,
   UpdateDebtInput,
   UpdateDebtAdditionInput,
   UpdateLedgerAccountInput,
   UpdateRepaymentInput,
+  UpdateTransactionInput,
   User,
 } from "./types"
 
@@ -160,4 +165,38 @@ export const api = {
       body: JSON.stringify(input),
     }),
   counterparties: () => request<Counterparty[]>("/counterparties"),
+  transactions: (params: Record<string, string | number | undefined>) => {
+    const query = new URLSearchParams()
+    Object.entries(params).forEach(([key, value]) => {
+      if (value !== undefined && value !== "") query.set(key, String(value))
+    })
+    return request<TransactionList>(`/transactions?${query}`)
+  },
+  createTransaction: (input: CreateTransactionInput) =>
+    request<LedgerTransaction>("/transactions", {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey() },
+      body: JSON.stringify(input),
+    }),
+  updateTransaction: (id: string, input: UpdateTransactionInput) =>
+    request<LedgerTransaction>(`/transactions/${id}`, {
+      method: "PATCH",
+      headers: { "Idempotency-Key": idempotencyKey() },
+      body: JSON.stringify(input),
+    }),
+  deleteTransaction: (id: string, version: number) =>
+    request<void>(`/transactions/${id}`, {
+      method: "DELETE",
+      headers: { "Idempotency-Key": idempotencyKey() },
+      body: JSON.stringify({ version }),
+    }),
+  restoreTransaction: (id: string, version: number) =>
+    request<LedgerTransaction>(`/transactions/${id}/restore`, {
+      method: "POST",
+      headers: { "Idempotency-Key": idempotencyKey() },
+      body: JSON.stringify({ version }),
+    }),
+  transactionSummary: (month: string) =>
+    request<TransactionMonthSummary>(`/transactions/summary?month=${encodeURIComponent(month)}`),
+  transactionCategories: () => request<string[]>("/transactions/categories"),
 }

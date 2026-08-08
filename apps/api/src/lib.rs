@@ -7,6 +7,7 @@ pub mod domain;
 pub mod email;
 pub mod error;
 pub mod rate_limit;
+pub mod transactions;
 
 use std::sync::Arc;
 
@@ -76,7 +77,10 @@ impl Modify for SecurityAddon {
         debts::update_repayment, debts::reverse_repayment, debts::list_counterparties,
         debts::create_counterparty, debts::update_counterparty, debts::dashboard_summary,
         accounts::list_ledger_accounts, accounts::create_ledger_account, accounts::update_ledger_account,
-        accounts::archive_ledger_account, accounts::restore_ledger_account
+        accounts::archive_ledger_account, accounts::restore_ledger_account,
+        transactions::list_transactions, transactions::create_transaction, transactions::update_transaction,
+        transactions::delete_transaction, transactions::restore_transaction, transactions::transaction_summary,
+        transactions::list_transaction_categories
     ),
     components(schemas(
         domain::UserView, domain::RegisterRequest, domain::LoginRequest, domain::EmailRequest,
@@ -89,7 +93,10 @@ impl Modify for SecurityAddon {
         domain::CreateCounterpartyRequest, domain::UpdateCounterpartyRequest,
         domain::AccountType, domain::AccountNameSource, domain::LedgerAccountBrief, domain::LedgerAccountView,
         domain::CreateLedgerAccountRequest, domain::UpdateLedgerAccountRequest,
-        domain::DashboardSummary, error::ErrorBody
+        domain::DashboardSummary, error::ErrorBody,
+        domain::TransactionKind, domain::LedgerTransactionView, domain::TransactionListResponse,
+        domain::CreateTransactionRequest, domain::UpdateTransactionRequest,
+        domain::TransactionDaySummary, domain::TransactionCategorySummary, domain::TransactionMonthSummary
     )),
     modifiers(&SecurityAddon),
     tags((name = "知余", description = "个人债务管理 API"))
@@ -141,7 +148,27 @@ pub fn app(state: AppState) -> Router {
             get(debts::list_counterparties).post(debts::create_counterparty),
         )
         .route("/counterparties/{id}", patch(debts::update_counterparty))
-        .route("/dashboard/summary", get(debts::dashboard_summary));
+        .route("/dashboard/summary", get(debts::dashboard_summary))
+        .route(
+            "/transactions",
+            get(transactions::list_transactions).post(transactions::create_transaction),
+        )
+        .route(
+            "/transactions/summary",
+            get(transactions::transaction_summary),
+        )
+        .route(
+            "/transactions/categories",
+            get(transactions::list_transaction_categories),
+        )
+        .route(
+            "/transactions/{id}",
+            patch(transactions::update_transaction).delete(transactions::delete_transaction),
+        )
+        .route(
+            "/transactions/{id}/restore",
+            post(transactions::restore_transaction),
+        );
 
     let index = state.config.web_dist_dir.join("index.html");
     let static_files =

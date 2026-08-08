@@ -14,7 +14,7 @@ use crate::{
     debts::{idempotency_key, replay_idempotency, request_hash, store_idempotency, validate_note},
     domain::{
         AccountNameSource, AccountType, CreateLedgerAccountRequest, LedgerAccountView,
-        UpdateLedgerAccountRequest, VersionRequest, validate_email,
+        UpdateLedgerAccountRequest, VersionRequest, validate_email, validate_opening_balance,
     },
     error::ApiError,
 };
@@ -36,6 +36,7 @@ pub async fn create_ledger_account(
     Json(input): Json<CreateLedgerAccountRequest>,
 ) -> Result<Response, ApiError> {
     validate_note(&input.note)?;
+    validate_opening_balance(input.opening_balance_cents)?;
     let details = validate_account_details(
         &input.account_type,
         input.bank_name.as_deref(),
@@ -63,8 +64,8 @@ pub async fn create_ledger_account(
     let id = Uuid::now_v7().to_string();
     let now = Utc::now().to_rfc3339();
     tx.execute(
-        "INSERT INTO ledger_accounts(id, user_id, name, normalized_name, name_source, account_type, note, bank_name, branch_name, card_number, nickname, phone, email, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14)",
-        params![id.clone(), user.id.clone(), name, normalized_name, name_source.as_str(), input.account_type.as_str(), input.note.trim(), details.bank_name, details.branch_name, details.card_number, details.nickname, details.phone, details.email, now],
+        "INSERT INTO ledger_accounts(id, user_id, name, normalized_name, name_source, account_type, note, bank_name, branch_name, card_number, nickname, phone, email, created_at, updated_at, opening_balance_cents) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?14, ?15)",
+        params![id.clone(), user.id.clone(), name, normalized_name, name_source.as_str(), input.account_type.as_str(), input.note.trim(), details.bank_name, details.branch_name, details.card_number, details.nickname, details.phone, details.email, now, input.opening_balance_cents],
     ).await?;
     let item = load_ledger_account(&tx, &user.id, &id).await?;
     store_idempotency(
@@ -90,6 +91,7 @@ pub async fn update_ledger_account(
     Json(input): Json<UpdateLedgerAccountRequest>,
 ) -> Result<Response, ApiError> {
     validate_note(&input.note)?;
+    validate_opening_balance(input.opening_balance_cents)?;
     let details = validate_account_details(
         &input.account_type,
         input.bank_name.as_deref(),
@@ -117,8 +119,8 @@ pub async fn update_ledger_account(
     let normalized_name = normalize_account_name(&name);
     ensure_name_available(&tx, &user.id, &normalized_name, Some(&id)).await?;
     let changed = tx.execute(
-        "UPDATE ledger_accounts SET name = ?1, normalized_name = ?2, name_source = ?3, account_type = ?4, note = ?5, bank_name = ?6, branch_name = ?7, card_number = ?8, nickname = ?9, phone = ?10, email = ?11, version = version + 1, updated_at = ?12 WHERE id = ?13 AND user_id = ?14 AND version = ?15",
-        params![name, normalized_name, name_source.as_str(), input.account_type.as_str(), input.note.trim(), details.bank_name, details.branch_name, details.card_number, details.nickname, details.phone, details.email, Utc::now().to_rfc3339(), id.clone(), user.id.clone(), input.version],
+        "UPDATE ledger_accounts SET name = ?1, normalized_name = ?2, name_source = ?3, account_type = ?4, note = ?5, bank_name = ?6, branch_name = ?7, card_number = ?8, nickname = ?9, phone = ?10, email = ?11, version = version + 1, updated_at = ?12, opening_balance_cents = ?16 WHERE id = ?13 AND user_id = ?14 AND version = ?15",
+        params![name, normalized_name, name_source.as_str(), input.account_type.as_str(), input.note.trim(), details.bank_name, details.branch_name, details.card_number, details.nickname, details.phone, details.email, Utc::now().to_rfc3339(), id.clone(), user.id.clone(), input.version, input.opening_balance_cents],
     ).await?;
     if changed == 0 {
         return Err(ApiError::conflict(
@@ -229,7 +231,7 @@ async fn load_ledger_accounts(
     user_id: &str,
 ) -> Result<Vec<LedgerAccountView>, ApiError> {
     let mut rows = conn.query(
-        "SELECT a.id, a.name, a.account_type, a.note, a.bank_name, a.branch_name, a.card_number, a.nickname, a.phone, a.email, a.archived_at, a.version, a.created_at, a.updated_at, a.name_source, (SELECT COUNT(*) FROM debts d WHERE d.user_id = a.user_id AND d.account_id = a.id) + (SELECT COUNT(*) FROM debt_addition_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) + (SELECT COUNT(*) FROM repayment_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) AS usage_count FROM ledger_accounts a WHERE a.user_id = ?1 ORDER BY a.archived_at IS NOT NULL, a.normalized_name, a.id",
+        "SELECT a.id, a.name, a.account_type, a.note, a.bank_name, a.branch_name, a.card_number, a.nickname, a.phone, a.email, a.archived_at, a.version, a.created_at, a.updated_at, a.name_source, (SELECT COUNT(*) FROM debts d WHERE d.user_id = a.user_id AND d.account_id = a.id) + (SELECT COUNT(*) FROM debt_addition_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) + (SELECT COUNT(*) FROM repayment_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) + (SELECT COUNT(*) FROM ledger_transactions t WHERE t.user_id = a.user_id AND t.account_id = a.id) AS usage_count, a.opening_balance_cents, COALESCE((SELECT b.balance_cents FROM ledger_account_balances b WHERE b.account_id = a.id), a.opening_balance_cents) AS balance_cents FROM ledger_accounts a WHERE a.user_id = ?1 ORDER BY a.archived_at IS NOT NULL, a.normalized_name, a.id",
         [user_id],
     ).await?;
     let mut items = Vec::new();
@@ -245,7 +247,7 @@ async fn load_ledger_account(
     id: &str,
 ) -> Result<LedgerAccountView, ApiError> {
     let mut rows = conn.query(
-        "SELECT a.id, a.name, a.account_type, a.note, a.bank_name, a.branch_name, a.card_number, a.nickname, a.phone, a.email, a.archived_at, a.version, a.created_at, a.updated_at, a.name_source, (SELECT COUNT(*) FROM debts d WHERE d.user_id = a.user_id AND d.account_id = a.id) + (SELECT COUNT(*) FROM debt_addition_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) + (SELECT COUNT(*) FROM repayment_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) AS usage_count FROM ledger_accounts a WHERE a.id = ?1 AND a.user_id = ?2",
+        "SELECT a.id, a.name, a.account_type, a.note, a.bank_name, a.branch_name, a.card_number, a.nickname, a.phone, a.email, a.archived_at, a.version, a.created_at, a.updated_at, a.name_source, (SELECT COUNT(*) FROM debts d WHERE d.user_id = a.user_id AND d.account_id = a.id) + (SELECT COUNT(*) FROM debt_addition_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) + (SELECT COUNT(*) FROM repayment_events e WHERE e.user_id = a.user_id AND e.account_id = a.id) + (SELECT COUNT(*) FROM ledger_transactions t WHERE t.user_id = a.user_id AND t.account_id = a.id) AS usage_count, a.opening_balance_cents, COALESCE((SELECT b.balance_cents FROM ledger_account_balances b WHERE b.account_id = a.id), a.opening_balance_cents) AS balance_cents FROM ledger_accounts a WHERE a.id = ?1 AND a.user_id = ?2",
         params![id, user_id],
     ).await?;
     let row = rows
@@ -276,6 +278,8 @@ fn ledger_account_from_row(row: &libsql::Row) -> Result<LedgerAccountView, ApiEr
         created_at: row.get(12)?,
         updated_at: row.get(13)?,
         usage_count: row.get(15)?,
+        opening_balance_cents: row.get(16)?,
+        balance_cents: row.get(17)?,
     })
 }
 

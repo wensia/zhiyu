@@ -18,6 +18,7 @@ const LEDGER_ACCOUNT_NAME_SOURCE_MIGRATION: &str =
 const LEDGER_ACCOUNT_CARD_NUMBER_MIGRATION: &str =
     include_str!("../migrations/0007_ledger_account_card_number.sql");
 const DEBT_ORIGIN_KIND_MIGRATION: &str = include_str!("../migrations/0008_debt_origin_kind.sql");
+const TRANSACTIONS_MIGRATION: &str = include_str!("../migrations/0009_transactions.sql");
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, INITIAL_MIGRATION),
     (2, DEBT_ADDITIONS_MIGRATION),
@@ -27,6 +28,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, LEDGER_ACCOUNT_NAME_SOURCE_MIGRATION),
     (7, LEDGER_ACCOUNT_CARD_NUMBER_MIGRATION),
     (8, DEBT_ORIGIN_KIND_MIGRATION),
+    (9, TRANSACTIONS_MIGRATION),
 ];
 
 pub async fn connect(config: &Config) -> Result<Database> {
@@ -202,7 +204,7 @@ mod tests {
         while let Some(row) = versions.next().await.unwrap() {
             applied.push(row.get::<i64>(0).unwrap());
         }
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
         let mut tables = conn
             .query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'debt_addition_events'",
@@ -683,5 +685,167 @@ mod tests {
             .execute("UPDATE debts SET origin_kind = 'gift' WHERE id = 'd1'", ())
             .await;
         assert!(invalid.is_err());
+    }
+
+    #[tokio::test]
+    async fn existing_v8_databases_gain_ledger_transactions_and_balance_views() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(root.path().join("transactions.db"))
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().take(8) {
+            apply_migration(&conn, *version, sql).await.unwrap();
+        }
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, created_at, updated_at) VALUES ('u1', 'transactions@example.com', 'hash', 'Asia/Shanghai', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_accounts(id, user_id, name, normalized_name, name_source, account_type, note, version, created_at, updated_at) VALUES ('a1', 'u1', '微信零钱', '微信零钱', 'derived', 'wechat_balance', '', 1, '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO counterparties(id, user_id, display_name, normalized_name, created_at, updated_at) VALUES ('c1', 'u1', '旧联系人', '旧联系人', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO debts(id, user_id, counterparty_id, direction, principal_cents, occurred_on, note, account_id, origin_kind, created_at, updated_at) VALUES ('d1', 'u1', 'c1', 'lend_out', 10000, '2026-08-01', '借出', 'a1', 'cash_movement', '2026-08-02T00:00:00Z', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO repayment_events(id, user_id, debt_id, kind, amount_cents, effective_on, note, account_id, created_at) VALUES ('r1', 'u1', 'd1', 'payment', 1000, '2026-08-02', '还了一部分', 'a1', '2026-08-02T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        migrate(&db).await.unwrap();
+
+        let mut versions = conn
+            .query("SELECT version FROM schema_migrations ORDER BY version", ())
+            .await
+            .unwrap();
+        let mut applied = Vec::new();
+        while let Some(row) = versions.next().await.unwrap() {
+            applied.push(row.get::<i64>(0).unwrap());
+        }
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        for (kind, name) in [
+            ("table", "ledger_transactions"),
+            ("view", "ledger_account_movements"),
+            ("view", "ledger_account_balances"),
+        ] {
+            let mut rows = conn
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type = ?1 AND name = ?2",
+                    [kind, name],
+                )
+                .await
+                .unwrap();
+            assert!(rows.next().await.unwrap().is_some(), "missing {name}");
+        }
+
+        conn.execute(
+            "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, category, account_id, created_at, updated_at) VALUES ('t1', 'u1', 'income', 5000, '2026-08-03', '工资', 'a1', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, category, account_id, created_at, updated_at) VALUES ('t2', 'u1', 'expense', 1200, '2026-08-03', '餐饮', 'a1', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        let invalid_kind = conn
+            .execute(
+                "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, created_at, updated_at) VALUES ('t3', 'u1', 'gift', 100, '2026-08-03', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')",
+                (),
+            )
+            .await;
+        assert!(invalid_kind.is_err());
+        let zero_amount = conn
+            .execute(
+                "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, created_at, updated_at) VALUES ('t4', 'u1', 'income', 0, '2026-08-03', '2026-08-03T00:00:00Z', '2026-08-03T00:00:00Z')",
+                (),
+            )
+            .await;
+        assert!(zero_amount.is_err());
+
+        // 余额 = 初始 0 + 记账(5000 - 1200) + 债务现金流水(-10000 + 1000) = -5200
+        let mut rows = conn
+            .query(
+                "SELECT balance_cents FROM ledger_account_balances WHERE account_id = 'a1'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            -5200
+        );
+
+        // 归档记账条目即回滚其余额影响：-5200 + 1200 = -4000
+        conn.execute(
+            "UPDATE ledger_transactions SET archived_at = '2026-08-04T00:00:00Z' WHERE id = 't2'",
+            (),
+        )
+        .await
+        .unwrap();
+        let mut rows = conn
+            .query(
+                "SELECT balance_cents FROM ledger_account_balances WHERE account_id = 'a1'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            -4000
+        );
+
+        // 初始余额列默认 0，可更新
+        let mut rows = conn
+            .query(
+                "SELECT opening_balance_cents FROM ledger_accounts WHERE id = 'a1'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+            0
+        );
+
+        // 删除用户级联删除记账条目
+        conn.execute("DELETE FROM users WHERE id = 'u1'", ())
+            .await
+            .unwrap();
+        let mut rows = conn
+            .query(
+                "SELECT id FROM ledger_transactions WHERE user_id = 'u1'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert!(rows.next().await.unwrap().is_none());
     }
 }

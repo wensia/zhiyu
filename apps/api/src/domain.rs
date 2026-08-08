@@ -1,4 +1,4 @@
-use chrono::{DateTime, Duration, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, Utc};
 use chrono_tz::Tz;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -220,6 +220,8 @@ pub struct LedgerAccountView {
     pub archived: bool,
     pub version: i64,
     pub usage_count: i64,
+    pub opening_balance_cents: i64,
+    pub balance_cents: i64,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -426,6 +428,8 @@ pub struct CreateLedgerAccountRequest {
     pub phone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(default)]
+    pub opening_balance_cents: i64,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -448,6 +452,8 @@ pub struct UpdateLedgerAccountRequest {
     pub phone: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub email: Option<String>,
+    #[serde(default)]
+    pub opening_balance_cents: i64,
     pub version: i64,
 }
 
@@ -458,6 +464,128 @@ pub struct DashboardSummary {
     pub borrow_in_remaining_cents: i64,
     pub net_cents: i64,
     pub overdue_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum TransactionKind {
+    Income,
+    Expense,
+}
+
+impl TransactionKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Income => "income",
+            Self::Expense => "expense",
+        }
+    }
+
+    pub fn from_db(value: &str) -> Result<Self, ApiError> {
+        match value {
+            "income" => Ok(Self::Income),
+            "expense" => Ok(Self::Expense),
+            _ => Err(ApiError::internal("transaction kind is invalid")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct LedgerTransactionView {
+    pub id: String,
+    pub kind: TransactionKind,
+    pub amount_cents: i64,
+    pub occurred_on: String,
+    pub category: String,
+    pub account: Option<LedgerAccountBrief>,
+    pub note: String,
+    pub archived: bool,
+    pub version: i64,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionListResponse {
+    pub items: Vec<LedgerTransactionView>,
+    pub page: u32,
+    pub page_size: u32,
+    pub total: u64,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionListQuery {
+    pub month: Option<String>,
+    pub kind: Option<String>,
+    pub category: Option<String>,
+    pub account_id: Option<String>,
+    pub page: Option<u32>,
+    pub page_size: Option<u32>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionSummaryQuery {
+    pub month: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionDaySummary {
+    pub date: String,
+    pub income_cents: i64,
+    pub expense_cents: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionCategorySummary {
+    pub category: String,
+    pub income_cents: i64,
+    pub expense_cents: i64,
+    pub count: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionMonthSummary {
+    pub month: String,
+    pub days: Vec<TransactionDaySummary>,
+    pub by_category: Vec<TransactionCategorySummary>,
+    pub income_cents: i64,
+    pub expense_cents: i64,
+    pub net_cents: i64,
+    pub transaction_count: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateTransactionRequest {
+    pub kind: TransactionKind,
+    pub amount_cents: i64,
+    pub occurred_on: String,
+    #[serde(default)]
+    pub category: String,
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateTransactionRequest {
+    pub version: i64,
+    pub kind: TransactionKind,
+    pub amount_cents: i64,
+    pub occurred_on: String,
+    #[serde(default)]
+    pub category: String,
+    pub account_id: Option<String>,
+    #[serde(default)]
+    pub note: String,
 }
 
 pub fn validate_email(email: &str) -> Result<String, ApiError> {
@@ -493,6 +621,47 @@ pub fn validate_date(value: &str, label: &str) -> Result<(), ApiError> {
 pub fn validate_amount(value: i64) -> Result<(), ApiError> {
     if !(1..=MAX_SAFE_CENTS).contains(&value) {
         return Err(ApiError::validation("金额必须大于 0 且在安全范围内"));
+    }
+    Ok(())
+}
+
+pub fn validate_category(value: &str) -> Result<String, ApiError> {
+    let value = value.trim();
+    if value.chars().count() > 60 || value.chars().any(char::is_control) {
+        return Err(ApiError::validation(
+            "分类不能超过 60 个字符，且不能包含控制字符",
+        ));
+    }
+    Ok(value.to_owned())
+}
+
+/// 校验 YYYY-MM 月份，返回 [当月 1 日, 次月 1 日) 半开区间，供 occurred_on 范围过滤。
+pub fn validate_month(value: &str) -> Result<(String, String), ApiError> {
+    let invalid = || ApiError::validation("月份格式应为 YYYY-MM");
+    let bytes = value.as_bytes();
+    if bytes.len() != 7
+        || bytes[4] != b'-'
+        || !bytes.iter().all(|b| b.is_ascii_digit() || *b == b'-')
+    {
+        return Err(invalid());
+    }
+    let start =
+        NaiveDate::parse_from_str(&format!("{value}-01"), "%Y-%m-%d").map_err(|_| invalid())?;
+    let end = if start.month() == 12 {
+        NaiveDate::from_ymd_opt(start.year() + 1, 1, 1)
+    } else {
+        NaiveDate::from_ymd_opt(start.year(), start.month() + 1, 1)
+    }
+    .ok_or_else(invalid)?;
+    Ok((
+        start.format("%Y-%m-%d").to_string(),
+        end.format("%Y-%m-%d").to_string(),
+    ))
+}
+
+pub fn validate_opening_balance(value: i64) -> Result<(), ApiError> {
+    if !(-MAX_SAFE_CENTS..=MAX_SAFE_CENTS).contains(&value) {
+        return Err(ApiError::validation("初始余额超出安全范围"));
     }
     Ok(())
 }
@@ -554,7 +723,10 @@ pub fn debt_status(
 mod tests {
     use chrono::{TimeZone, Utc};
 
-    use super::{DebtStatus, MAX_SAFE_CENTS, debt_status, validate_amount};
+    use super::{
+        DebtStatus, MAX_SAFE_CENTS, debt_status, validate_amount, validate_category,
+        validate_month, validate_opening_balance,
+    };
 
     #[test]
     fn due_status_respects_seven_day_boundary_and_priority() {
@@ -613,5 +785,39 @@ mod tests {
         assert!(validate_amount(MAX_SAFE_CENTS).is_ok());
         assert!(validate_amount(0).is_err());
         assert!(validate_amount(MAX_SAFE_CENTS + 1).is_err());
+    }
+
+    #[test]
+    fn month_validation_returns_a_half_open_date_range() {
+        assert_eq!(
+            validate_month("2026-08").unwrap(),
+            ("2026-08-01".to_owned(), "2026-09-01".to_owned())
+        );
+        assert_eq!(
+            validate_month("2026-12").unwrap(),
+            ("2026-12-01".to_owned(), "2027-01-01".to_owned())
+        );
+        assert!(validate_month("2026-8").is_err());
+        assert!(validate_month("2026-13").is_err());
+        assert!(validate_month("2026/08").is_err());
+        assert!(validate_month("").is_err());
+    }
+
+    #[test]
+    fn category_validation_trims_and_rejects_control_or_overlong_values() {
+        assert_eq!(validate_category("  餐饮  ").unwrap(), "餐饮");
+        assert_eq!(validate_category("").unwrap(), "");
+        assert!(validate_category(&"长".repeat(61)).is_err());
+        assert!(validate_category("餐饮\n换行").is_err());
+    }
+
+    #[test]
+    fn opening_balance_allows_negatives_within_safe_bounds() {
+        assert!(validate_opening_balance(0).is_ok());
+        assert!(validate_opening_balance(-5000).is_ok());
+        assert!(validate_opening_balance(MAX_SAFE_CENTS).is_ok());
+        assert!(validate_opening_balance(-MAX_SAFE_CENTS).is_ok());
+        assert!(validate_opening_balance(MAX_SAFE_CENTS + 1).is_err());
+        assert!(validate_opening_balance(-MAX_SAFE_CENTS - 1).is_err());
     }
 }

@@ -1,12 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeftIcon, CircleUserRoundIcon, HandCoinsIcon, LandmarkIcon, LogOutIcon, PanelLeftIcon, SettingsIcon, WalletCardsIcon } from "lucide-react"
+import { ArrowLeftIcon, CircleUserRoundIcon, HandCoinsIcon, LogOutIcon, NotebookPenIcon, PanelLeftIcon, WalletCardsIcon } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Navigate, NavLink, Outlet, Route, Routes, useMatch, useNavigate } from "react-router-dom"
 
 import { api } from "./api/client"
+import { BrandMark } from "./components/brand-mark"
 import { Button, useToast } from "./components/ui"
 import { AccountWorkspace } from "./features/account-workspace"
 import { DebtDetailPage, DebtWorkspace } from "./features/debt-workspace"
+import { TransactionWorkspace } from "./features/transaction-workspace"
 import {
   ForgotPasswordPage,
   LoginPage,
@@ -25,7 +27,7 @@ function savedSidebarState() {
 
 function ProtectedLayout() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false })
-  if (me.isLoading) return <div className="app-loading"><span className="brand-mark"><LandmarkIcon /></span><div className="spinner" /><p>正在打开知余…</p></div>
+  if (me.isLoading) return <div className="app-loading"><span className="brand-mark"><BrandMark /></span><div className="spinner" /><p>正在打开知余…</p></div>
   if (me.isError) return <Navigate replace to="/login" />
   return <AppShell email={me.data!.email} />
 }
@@ -62,7 +64,7 @@ export function AppShell({ email }: { email: string }) {
     <div className="app-shell" data-sidebar={collapsed ? "collapsed" : "expanded"}>
       <aside className="sidebar">
         <div className="sidebar-header">
-          <div className="brand-lockup"><span className="brand-mark"><LandmarkIcon aria-hidden="true" /></span><span className="brand-copy"><strong>知余</strong><small>个人账本</small></span></div>
+          <div className="brand-lockup"><span className="brand-mark"><BrandMark /></span><span className="brand-copy"><strong>知余</strong><small>个人账本</small></span></div>
           <Button
             aria-label={collapsed ? "展开侧边栏" : "折叠侧边栏"}
             onClick={() => setCollapsed((value) => !value)}
@@ -79,17 +81,16 @@ export function AppShell({ email }: { email: string }) {
               <span className="nav-copy">债务管理</span>
               <span aria-hidden="true" className="nav-tooltip"><strong>债务管理</strong><small>个人账本</small></span>
             </NavLink>
+            <NavLink aria-label="个人账本：记账" to="/app/transactions">
+              <NotebookPenIcon aria-hidden="true" />
+              <span className="nav-copy">记账</span>
+              <span aria-hidden="true" className="nav-tooltip"><strong>记账</strong><small>个人账本</small></span>
+            </NavLink>
             <NavLink aria-label="个人账本：账户管理" to="/app/accounts">
               <WalletCardsIcon aria-hidden="true" />
               <span className="nav-copy">账户管理</span>
               <span aria-hidden="true" className="nav-tooltip"><strong>账户管理</strong><small>个人账本</small></span>
             </NavLink>
-            <span aria-disabled="true" className="nav-disabled">
-              <SettingsIcon aria-hidden="true" />
-              <span className="nav-copy">更多账本功能</span>
-              <small className="nav-soon">即将推出</small>
-              <span aria-hidden="true" className="nav-tooltip"><strong>更多账本功能</strong><small>个人账本</small></span>
-            </span>
           </nav>
         </div>
         <div className="account-block">
@@ -112,6 +113,7 @@ export function AppShell({ email }: { email: string }) {
       </section>
       <nav className="mobile-nav">
         <NavLink to="/app/debts"><HandCoinsIcon /><span>债务</span></NavLink>
+        <NavLink to="/app/transactions"><NotebookPenIcon /><span>记账</span></NavLink>
         <NavLink to="/app/accounts"><WalletCardsIcon /><span>账户</span></NavLink>
         <button disabled={logout.isPending} onClick={() => logout.mutate()} type="button"><LogOutIcon /><span>退出</span></button>
       </nav>
@@ -141,6 +143,7 @@ export default function App() {
         <Route path="debts" element={<DebtWorkspace />} />
         <Route path="debts/:id" element={<DebtDetailPage />} />
         <Route path="accounts" element={<AccountWorkspace />} />
+        <Route path="transactions" element={<TransactionWorkspace />} />
         <Route index element={<Navigate replace to="debts" />} />
       </Route>
       <Route path="*" element={<Navigate replace to="/app/debts" />} />

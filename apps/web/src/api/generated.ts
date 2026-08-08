@@ -388,6 +388,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/transactions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_transactions"];
+        put?: never;
+        post: operations["create_transaction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transactions/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_transaction_categories"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transactions/summary": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["transaction_summary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/transactions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_transaction"];
+        options?: never;
+        head?: never;
+        patch: operations["update_transaction"];
+        trace?: never;
+    };
+    "/api/v1/transactions/{id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["restore_transaction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -450,6 +530,8 @@ export interface components {
             name?: string;
             nickname?: string | null;
             note?: string;
+            /** Format: int64 */
+            openingBalanceCents?: number;
             phone?: string | null;
         };
         CreateRepaymentRequest: {
@@ -458,6 +540,15 @@ export interface components {
             amountCents: number;
             effectiveOn: string;
             note?: string;
+        };
+        CreateTransactionRequest: {
+            accountId?: string | null;
+            /** Format: int64 */
+            amountCents: number;
+            category?: string;
+            kind: components["schemas"]["TransactionKind"];
+            note?: string;
+            occurredOn: string;
         };
         DashboardSummary: {
             /** Format: int64 */
@@ -536,6 +627,8 @@ export interface components {
         LedgerAccountView: {
             accountType: components["schemas"]["AccountType"];
             archived: boolean;
+            /** Format: int64 */
+            balanceCents: number;
             bankName?: string | null;
             branchName?: string | null;
             cardNumber?: string | null;
@@ -546,10 +639,27 @@ export interface components {
             nameSource: components["schemas"]["AccountNameSource"];
             nickname?: string | null;
             note: string;
+            /** Format: int64 */
+            openingBalanceCents: number;
             phone?: string | null;
             updatedAt: string;
             /** Format: int64 */
             usageCount: number;
+            /** Format: int64 */
+            version: number;
+        };
+        LedgerTransactionView: {
+            account?: null | components["schemas"]["LedgerAccountBrief"];
+            /** Format: int64 */
+            amountCents: number;
+            archived: boolean;
+            category: string;
+            createdAt: string;
+            id: string;
+            kind: components["schemas"]["TransactionKind"];
+            note: string;
+            occurredOn: string;
+            updatedAt: string;
             /** Format: int64 */
             version: number;
         };
@@ -588,6 +698,46 @@ export interface components {
         TokenRequest: {
             token: string;
         };
+        TransactionCategorySummary: {
+            category: string;
+            /** Format: int64 */
+            count: number;
+            /** Format: int64 */
+            expenseCents: number;
+            /** Format: int64 */
+            incomeCents: number;
+        };
+        TransactionDaySummary: {
+            date: string;
+            /** Format: int64 */
+            expenseCents: number;
+            /** Format: int64 */
+            incomeCents: number;
+        };
+        /** @enum {string} */
+        TransactionKind: "income" | "expense";
+        TransactionListResponse: {
+            items: components["schemas"]["LedgerTransactionView"][];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            pageSize: number;
+            /** Format: int64 */
+            total: number;
+        };
+        TransactionMonthSummary: {
+            byCategory: components["schemas"]["TransactionCategorySummary"][];
+            days: components["schemas"]["TransactionDaySummary"][];
+            /** Format: int64 */
+            expenseCents: number;
+            /** Format: int64 */
+            incomeCents: number;
+            month: string;
+            /** Format: int64 */
+            netCents: number;
+            /** Format: int64 */
+            transactionCount: number;
+        };
         UpdateCounterpartyRequest: {
             displayName: string;
             note?: string;
@@ -625,6 +775,8 @@ export interface components {
             name?: string;
             nickname?: string | null;
             note?: string;
+            /** Format: int64 */
+            openingBalanceCents?: number;
             phone?: string | null;
             /** Format: int64 */
             version: number;
@@ -636,6 +788,17 @@ export interface components {
             effectiveOn: string;
             movementType?: string | null;
             note?: string;
+            /** Format: int64 */
+            version: number;
+        };
+        UpdateTransactionRequest: {
+            accountId?: string | null;
+            /** Format: int64 */
+            amountCents: number;
+            category?: string;
+            kind: components["schemas"]["TransactionKind"];
+            note?: string;
+            occurredOn: string;
             /** Format: int64 */
             version: number;
         };
@@ -1455,6 +1618,224 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DebtView"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_transactions: {
+        parameters: {
+            query?: {
+                month?: string | null;
+                kind?: string | null;
+                category?: string | null;
+                accountId?: string | null;
+                page?: number | null;
+                pageSize?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionListResponse"];
+                };
+            };
+        };
+    };
+    create_transaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateTransactionRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerTransactionView"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_transaction_categories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+        };
+    };
+    transaction_summary: {
+        parameters: {
+            query: {
+                month: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionMonthSummary"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_transaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_transaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateTransactionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerTransactionView"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    restore_transaction: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["VersionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerTransactionView"];
                 };
             };
             409: {

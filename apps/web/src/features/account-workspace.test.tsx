@@ -41,6 +41,8 @@ const accounts = [
     archived: false,
     version: 1,
     usageCount: 3,
+    openingBalanceCents: 0,
+    balanceCents: 0,
     createdAt: "2026-08-02T00:00:00Z",
     updatedAt: "2026-08-02T00:00:00Z",
   },
@@ -59,6 +61,8 @@ const accounts = [
     archived: false,
     version: 1,
     usageCount: 1,
+    openingBalanceCents: 0,
+    balanceCents: 0,
     createdAt: "2026-08-02T00:00:00Z",
     updatedAt: "2026-08-02T00:00:00Z",
   },
@@ -133,6 +137,7 @@ describe("AccountWorkspace", () => {
       nickname: "小余",
       phone: null,
       email: null,
+      openingBalanceCents: 0,
     }))
   })
 
@@ -175,6 +180,7 @@ describe("AccountWorkspace", () => {
       nickname: null,
       phone: null,
       email: null,
+      openingBalanceCents: 0,
     }))
   })
 
@@ -213,6 +219,7 @@ describe("AccountWorkspace", () => {
       nickname: "小余",
       phone: "+86 138-0013-8000",
       email: "user@example.com",
+      openingBalanceCents: 0,
     }))
   })
 
@@ -310,6 +317,7 @@ describe("AccountWorkspace", () => {
       phone: null,
       email: null,
       version: 1,
+      openingBalanceCents: 0,
     }))
   })
 

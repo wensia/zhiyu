@@ -1,12 +1,13 @@
 import { zodResolver } from "@hookform/resolvers/zod"
 import { useMutation } from "@tanstack/react-query"
-import { ArrowLeftIcon, CheckCircle2Icon, LandmarkIcon } from "lucide-react"
+import { ArrowLeftIcon, CheckCircle2Icon } from "lucide-react"
 import { useEffect } from "react"
 import { useForm } from "react-hook-form"
 import { Link, useNavigate, useSearchParams } from "react-router-dom"
 import { z } from "zod"
 
 import { api } from "../api/client"
+import { BrandMark } from "../components/brand-mark"
 import { Button, Field, InlineNotice, Input, PasswordInput } from "../components/ui"
 
 const credentialsSchema = z.object({
@@ -20,7 +21,7 @@ function AuthFrame({ title, subtitle, children }: { title: string; subtitle: str
   return (
     <main className="auth-page">
       <section className="auth-panel">
-        <div className="brand-lockup"><span className="brand-mark"><LandmarkIcon /></span><span>知余</span></div>
+        <div className="brand-lockup"><span className="brand-mark"><BrandMark /></span><span>知余</span></div>
         <div className="auth-heading"><h1>{title}</h1><p>{subtitle}</p></div>
         {children}
       </section>

@@ -57,6 +57,22 @@ function normalizeCardNumber(value: string) {
   return digits
 }
 
+const yuan = (cents: number) => new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(cents / 100)
+
+/** 初始余额允许负值（如信用卡透支），最多两位小数。 */
+function parseOpeningBalance(value: string) {
+  const normalized = value.trim().replace(/[¥,，\s]/g, "")
+  if (!normalized) return 0
+  if (!/^-?\d+(\.\d{1,2})?$/.test(normalized)) throw new Error("初始余额格式不正确，最多两位小数")
+  const cents = Math.round(Number.parseFloat(normalized) * 100)
+  if (!Number.isSafeInteger(cents)) throw new Error("初始余额超出安全范围")
+  return cents
+}
+
+function AccountBalance({ cents }: { cents: number }) {
+  return <span className={`fund-account-balance ${cents > 0 ? "positive" : cents < 0 ? "negative" : ""}`}>{yuan(cents)}</span>
+}
+
 function AccountDetails({ account }: { account: LedgerAccountDetails }) {
   const items = ledgerAccountDetailItems(account)
   if (!items.length) return <span className="fund-account-details-empty">—</span>
@@ -93,6 +109,7 @@ function AccountFormModal({
   const [nickname, setNickname] = useState("")
   const [phone, setPhone] = useState("")
   const [email, setEmail] = useState("")
+  const [openingBalance, setOpeningBalance] = useState("")
   const [error, setError] = useState("")
   const bankAccount = accountType === "bank_card"
   const walletAccount = accountType === "wechat_balance" || accountType === "alipay_balance"
@@ -113,6 +130,7 @@ function AccountFormModal({
     setNickname(details?.nickname || "")
     setPhone(details?.phone || "")
     setEmail(details?.email || "")
+    setOpeningBalance(account?.openingBalanceCents ? String(account.openingBalanceCents / 100) : "")
     setError("")
   }, [account, open])
 
@@ -148,7 +166,7 @@ function AccountFormModal({
         phone: accountType === "wechat_balance" || accountType === "alipay_balance" ? normalizePhone(phone) : null,
         email: accountType === "alipay_balance" ? normalizeEmail(email) : null,
       }
-      const input = { accountType, name: normalizedName, note: note.trim(), ...details }
+      const input = { accountType, name: normalizedName, note: note.trim(), openingBalanceCents: parseOpeningBalance(openingBalance), ...details }
       if (account) return api.updateLedgerAccount(account.id, { ...input, version: account.version })
       return api.createLedgerAccount(input)
     },
@@ -192,6 +210,12 @@ function AccountFormModal({
                 value={name}
               />
             </Field>
+          </div>
+          <div className="account-form-row">
+            <Field description="余额 = 初始余额 + 记账流水 ± 债务现金流水。" label="初始余额（可选，元）">
+              <Input inputMode="decimal" onChange={(event) => setOpeningBalance(event.target.value)} placeholder="0.00，可为负数" value={openingBalance} />
+            </Field>
+            <span aria-hidden="true" className="account-form-empty-cell" />
           </div>
         </section>
         {bankAccount ? (
@@ -270,7 +294,7 @@ function AccountTable({
   const empty = !loading && accounts.length === 0
   const rows = loading ? Array.from({ length: 6 }, (_, index) => (
     <tr aria-hidden="true" className="skeleton-row" key={`account-skeleton-${index}`}>
-      {Array.from({ length: 7 }, (__, cellIndex) => <td key={cellIndex}><span className="skeleton-line" /></td>)}
+      {Array.from({ length: 8 }, (__, cellIndex) => <td key={cellIndex}><span className="skeleton-line" /></td>)}
     </tr>
   )) : accounts.map((account) => (
     <tr data-slot="table-row" key={account.id}>
@@ -279,6 +303,7 @@ function AccountTable({
       <td><AccountDetails account={account} /></td>
       <td><span className="fund-account-note">{account.note || "—"}</span></td>
       <td>{account.usageCount} 笔</td>
+      <td><AccountBalance cents={account.balanceCents} /></td>
       <td><AccountStatus archived={account.archived} /></td>
       <td data-sticky-cell="right">
         <ActionMenu
@@ -297,9 +322,9 @@ function AccountTable({
     <div aria-busy={loading} className="data-dock account-data-dock">
       <div className="desktop-table fund-account-table-frame">
         <table className="fund-account-table" data-slot="table">
-          <thead><tr><th>账户类型</th><th>账户</th><th>账户信息</th><th>备注</th><th>关联流水</th><th>状态</th><th data-sticky-cell="right"><span className="sr-only">操作</span></th></tr></thead>
+          <thead><tr><th>账户类型</th><th>账户</th><th>账户信息</th><th>备注</th><th>关联流水</th><th>余额</th><th>状态</th><th data-sticky-cell="right"><span className="sr-only">操作</span></th></tr></thead>
           <tbody>
-            {empty ? <tr className="table-state-row"><td colSpan={7}><div className="table-state"><WalletCardsIcon /><h2>暂无符合条件的账户</h2><p>调整搜索或归档筛选。</p></div></td></tr> : rows}
+            {empty ? <tr className="table-state-row"><td colSpan={8}><div className="table-state"><WalletCardsIcon /><h2>暂无符合条件的账户</h2><p>调整搜索或归档筛选。</p></div></td></tr> : rows}
           </tbody>
         </table>
       </div>
@@ -310,7 +335,7 @@ function AccountTable({
             <span className="fund-account-type">{ledgerAccountTypeLabel(account.accountType)}</span>
             <AccountDetails account={account} />
             {account.note ? <p>{account.note}</p> : null}
-            <div className="fund-account-card-footer"><span>关联 {account.usageCount} 笔流水</span><ActionMenu items={[{ label: "编辑账户", icon: <PencilIcon />, onSelect: () => onEdit(account) }, { label: account.archived ? "恢复账户" : "归档账户", icon: account.archived ? <RotateCcwIcon /> : <ArchiveIcon />, onSelect: () => onToggleArchive(account) }]} label={`操作 ${ledgerAccountDisplayLabel(account)}`} quiet /></div>
+            <div className="fund-account-card-footer"><span>关联 {account.usageCount} 笔流水 · 余额 <AccountBalance cents={account.balanceCents} /></span><ActionMenu items={[{ label: "编辑账户", icon: <PencilIcon />, onSelect: () => onEdit(account) }, { label: account.archived ? "恢复账户" : "归档账户", icon: account.archived ? <RotateCcwIcon /> : <ArchiveIcon />, onSelect: () => onToggleArchive(account) }]} label={`操作 ${ledgerAccountDisplayLabel(account)}`} quiet /></div>
           </article>
         ))}
       </div>
@@ -356,6 +381,7 @@ export function AccountWorkspace() {
       </section>
       {query.error ? <InlineNotice type="error">{query.error.message}<Button onClick={() => query.refetch()} size="sm">重试</Button></InlineNotice> : null}
       <AccountTable accounts={accounts} loading={query.isLoading} onEdit={setEditing} onToggleArchive={setConfirming} />
+      <p className="tx-balance-hint">余额 = 初始余额 + 记账流水 ± 债务现金流水；同一笔钱请勿重复记录；历史（未确认现金流）债务的还款不计入余额。</p>
       <AccountFormModal onOpenChange={setCreateOpen} onSaved={refresh} open={createOpen} />
       <AccountFormModal account={editing} onOpenChange={(open) => !open && setEditing(undefined)} onSaved={refresh} open={Boolean(editing)} />
       <ConfirmDialog

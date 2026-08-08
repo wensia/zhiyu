@@ -52,6 +52,8 @@ const ledgerAccount = {
   archived: false,
   version: 1,
   usageCount: 3,
+  openingBalanceCents: 0,
+  balanceCents: 0,
   createdAt: "2026-08-02T00:00:00Z",
   updatedAt: "2026-08-02T00:00:00Z",
 }
