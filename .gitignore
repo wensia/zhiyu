@@ -10,3 +10,6 @@ playwright-report/
 test-results/
 .DS_Store
 .gstack/
+
+# Playwright MCP 运行产物
+.playwright-mcp/
