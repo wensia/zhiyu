@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>知余备份设置</title>
+    <link rel="stylesheet" href="settings.css" />
+    <script src="settings.js" defer></script>
+  </head>
+  <body>
+    <main>
+      <header>
+        <p class="eyebrow">知余桌面版</p>
+        <h1>备份设置</h1>
+        <p class="intro">凭证只交给本机 Rust 进程，用于从服务器拉取经过校验的数据库快照。</p>
+      </header>
+
+      <form id="settings-form">
+        <label for="server-url">服务器完整 URL</label>
+        <input
+          id="server-url"
+          name="serverUrl"
+          type="url"
+          required
+          autocomplete="url"
+          placeholder="https://ledger.example.com"
+        />
+        <p class="hint">必须使用 HTTPS；本地开发可使用 http://127.0.0.1:端口。</p>
+
+        <label for="api-key">api-key</label>
+        <input
+          id="api-key"
+          name="apiKey"
+          type="password"
+          autocomplete="off"
+          placeholder="粘贴 api-key"
+        />
+        <p id="api-key-hint" class="hint">首次设置必须填写。保存前会实际连接服务器验证。</p>
+
+        <div id="credential-warning" class="notice warning" hidden></div>
+        <div id="save-result" class="notice" hidden></div>
+        <button id="save-button" type="submit">测试连接并保存</button>
+      </form>
+
+      <section aria-labelledby="status-heading">
+        <h2 id="status-heading">拉取状态</h2>
+        <dl>
+          <div>
+            <dt>最近拉取时间</dt>
+            <dd id="last-pull">尚未成功拉取</dd>
+          </div>
+          <div>
+            <dt>本地快照数</dt>
+            <dd id="snapshot-count">0</dd>
+          </div>
+          <div>
+            <dt>上次失败原因</dt>
+            <dd id="last-error">无</dd>
+          </div>
+        </dl>
+      </section>
+    </main>
+  </body>
+</html>

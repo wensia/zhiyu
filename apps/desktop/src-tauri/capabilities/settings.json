@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings",
+  "description": "本地备份设置页只能读取状态和保存连接配置",
+  "windows": ["settings"],
+  "permissions": ["allow-get-backup-settings", "allow-save-backup-settings"]
+}

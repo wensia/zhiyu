@@ -1,0 +1,9 @@
+[[permission]]
+identifier = "allow-get-backup-settings"
+description = "允许本地设置页读取备份配置与运行状态。"
+commands.allow = ["get_backup_settings"]
+
+[[permission]]
+identifier = "allow-save-backup-settings"
+description = "允许本地设置页试连并保存备份配置。"
+commands.allow = ["save_backup_settings"]
