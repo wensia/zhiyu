@@ -559,10 +559,15 @@ async fn api_key_lists_and_downloads_verified_backup() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(list[0]["id"], "2026-08-10T02:03:04Z");
-    assert_eq!(list[0]["created_at"], "2026-08-10T02:03:04Z");
     assert_eq!(list[0]["size"], snapshot.manifest.database_size_bytes);
     assert_eq!(list[0]["sha256"], snapshot.manifest.database_sha256);
-    assert_eq!(list[0]["schema_version"], 10);
+    // 字段名必须是 camelCase：桌面端的 RemoteSnapshot 带 rename_all = "camelCase"，
+    // 服务端漏掉这个属性时两边解析不上，而各自的单测都会照样通过——所以这里既断言
+    // camelCase 存在，也断言 snake_case 不存在，把跨端契约钉死在服务端这一侧。
+    assert_eq!(list[0]["createdAt"], "2026-08-10T02:03:04Z");
+    assert_eq!(list[0]["schemaVersion"], 10);
+    assert!(list[0].get("created_at").is_none());
+    assert!(list[0].get("schema_version").is_none());
 
     let response = test
         .router

@@ -83,6 +83,7 @@ pub struct BackupRuntimeStatus {
 pub struct BackupStatusStore(Arc<RwLock<BackupRuntimeStatus>>);
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
 pub struct BackupListItem {
     pub id: String,
     pub created_at: String,
