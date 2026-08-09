@@ -31,4 +31,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 utoipa = { version = "5.5", features = ["axum_extras", "chrono", "uuid"] }
 uuid = { version = "1.18", features = ["serde", "v7"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "native-tls"] }
+keyring = "3"
 zhiyu-backup-policy = { path = "crates/backup-policy" }

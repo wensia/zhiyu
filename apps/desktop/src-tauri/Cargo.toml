@@ -20,3 +20,13 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 tauri = { version = "2", features = [] }
 tracing-subscriber.workspace = true
+tracing.workspace = true
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+keyring.workspace = true
+zhiyu-backup-policy.workspace = true
