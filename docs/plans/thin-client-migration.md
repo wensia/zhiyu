@@ -61,6 +61,52 @@
 
 ---
 
+## 执行状态（2026-08-10）
+
+| 任务 | 状态 | 备注 |
+|---|---|---|
+| T1 备份（手动首次） | **已完成** | `~/zhiyu-backups/zhiyu-prod-20260810-001104.db`，integrity ok / fk 0，双重校验 |
+| T1 备份脚本 | **需返工** | `scripts/server-backup.sh` 有三个阻碍，见下 |
+| T4 桌面壳瘦身 | **已完成** | 净删 2945 行，`lib.rs` 425→76，`cargo check` 通过 |
+| T2 self-host 模式 | 待做 | |
+| T3 API 密钥 | 待做 | |
+| T5 git 备份下线 | 待做 | |
+| T6 HTTPS/cookie 实测 | 待做 | 需真实 Tauri 窗口 |
+| T7 文档 | 部分 | ADR-0001 已写，还差 supersede 标记 |
+| **生产部署** | **新增阻塞项** | 见下 |
+
+### 生产环境实测结论（2026-08-10）
+
+服务器 `ubuntu@139.155.151.124`，密钥 `~/.ssh/ai-ditui-139-155-151-124.pem`。
+
+- 数据库：`/opt/zhiyu/data/preview.db`（宿主机）← 挂载到容器 `/data`
+- **生产库停在迁移 7，本地在 9**。缺迁移 8、9，因此**没有 `ledger_transactions` 表**
+- 库内只有债务/往来数据：`debts: 5`、`repayment_events: 28`、`debt_addition_events: 3`、
+  `counterparties: 5`、`ledger_accounts: 3`；唯一用户是 `demo-20260802@zhiyu.app`
+- `zhiyu` 容器 `Up 6 days`，镜像约 8-04 构建，此后的提交（记账 `49e6cc9`、
+  桌面版 `73d677f`、备份 `6eb5d73`）均未上线
+- **宿主机和容器内都没有 `sqlite3`**
+- `/opt/zhiyu/data` 属主是 `nobody:nogroup`，ubuntu 用户无写权限
+- 没有 `-wal` / `-shm` 文件
+
+**后果**：桌面壳现在指向 `zhiyu.askfish.net`，打开记账页会失败。阶段一必须补一步
+「重建镜像 + 跑迁移 8、9」，且该步骤需要作者在服务器上执行，不能交给本地 agent。
+
+### `scripts/server-backup.sh` 的三个阻碍
+
+1. **路径混用容器与宿主机**（`:5-9`）。写快照到 `/data/backups`（容器内），却检查
+   `/opt/zhiyu/data/backups`（宿主机）。容器内跑第 65 行必挂；宿主机跑第 40 行必挂。
+2. **两边都没有 `sqlite3`**，第 37 行的前置检查直接 fail。
+3. **权限**：ubuntu 用户创建 `/opt/zhiyu/data/backups` 会被拒。
+
+另：第 4 行 `readonly PATH=...` 应去掉，restic 装在非标准路径时会找不到。
+
+**修法**：统一按宿主机路径；sqlite3 走一次性容器
+（`docker run --rm -v /opt/zhiyu/data:/src:ro -v <out>:/out alpine sh -c "apk add sqlite && ..."`，
+已实测可用）；备份输出目录改到 ubuntu 有写权限的位置。
+
+---
+
 ## 阶段一：连上远程并可用
 
 目标：桌面壳指向服务器，删掉内嵌后端与 git 备份，服务端有可信备份。
