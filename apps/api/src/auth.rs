@@ -418,6 +418,59 @@ fn generic_email_message() -> MessageResponse {
     }
 }
 
+/// 桌面端单机模式的本地用户引导。
+///
+/// 桌面版没有注册与邮箱验证的意义：首次启动静默建一个已验证的本地用户，之后每次
+/// 启动复用它并签发新会话。返回值是可直接下发的 `Set-Cookie` 头，调用方负责让
+/// webview 带上它——此后所有请求都与网页版走同一套 `AuthUser` 提取逻辑。
+pub async fn ensure_local_session(state: &AppState, email: &str) -> Result<String, ApiError> {
+    let conn = state.connection().await?;
+    let now = Utc::now();
+    let mut rows = conn
+        .query("SELECT id FROM users WHERE email = ?1", [email])
+        .await?;
+    let user_id = match rows.next().await? {
+        Some(row) => row.get::<String>(0)?,
+        None => {
+            // 本地用户从不通过密码登录，随机口令只是为了满足 NOT NULL 且不可猜。
+            let mut secret = [0_u8; 32];
+            rand::rngs::OsRng.fill_bytes(&mut secret);
+            let password_hash = hash_password(URL_SAFE_NO_PAD.encode(secret)).await?;
+            let id = Uuid::now_v7().to_string();
+            conn.execute(
+                "INSERT INTO users(id, email, password_hash, timezone, email_verified_at, created_at, updated_at) VALUES (?1, ?2, ?3, ?4, ?5, ?5, ?5)",
+                params![
+                    id.clone(),
+                    email,
+                    password_hash,
+                    "Asia/Shanghai",
+                    now.to_rfc3339()
+                ],
+            )
+            .await?;
+            id
+        }
+    };
+    // 单机模式下只该存在一条会话。旧 token 的明文没有留存、无法复用，所以每次启动
+    // 都要重新签发；但必须同时清掉上一条，否则每启动一次就在表里堆一行永不回收的
+    // 凭据哈希。
+    conn.execute("DELETE FROM sessions WHERE user_id = ?1", [user_id.clone()])
+        .await?;
+    let (token, token_hash) = new_token();
+    conn.execute(
+        "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        params![
+            Uuid::now_v7().to_string(),
+            user_id,
+            token_hash,
+            now.to_rfc3339(),
+            (now + Duration::days(SESSION_DAYS)).to_rfc3339()
+        ],
+    )
+    .await?;
+    Ok(session_cookie_header(&state.config, &token, false))
+}
+
 async fn hash_password(password: String) -> Result<String, ApiError> {
     tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);

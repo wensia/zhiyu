@@ -1,0 +1,36 @@
+[package]
+name = "zhiyu-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "zhiyu_desktop"
+# Tauri 在移动端需要 staticlib/cdylib；桌面端走 rlib。
+crate-type = ["staticlib", "cdylib", "rlib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "zhiyu-desktop"
+path = "src/main.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+zhiyu-api = { path = "../../api" }
+tauri = { version = "2", features = [] }
+anyhow.workspace = true
+async-trait.workspace = true
+axum.workspace = true
+chrono.workspace = true
+libsql.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+tempfile = "3.23"
+tower.workspace = true

@@ -10,6 +10,7 @@ playwright-report/
 test-results/
 .DS_Store
 .gstack/
+apps/desktop/src-tauri/gen/
 
 # Playwright MCP 运行产物
 .playwright-mcp/
