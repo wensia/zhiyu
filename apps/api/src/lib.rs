@@ -234,41 +234,15 @@ async fn csrf_guard(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let unsafe_method = !matches!(
-        *request.method(),
-        Method::GET | Method::HEAD | Method::OPTIONS
-    );
-    let has_session_cookie = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .is_some_and(|value| value.contains(state.config.cookie_name()));
-    if unsafe_method && has_session_cookie {
-        let origin_matches = request
-            .headers()
-            .get(header::ORIGIN)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|origin| origin.trim_end_matches('/') == state.config.public_base_url);
-        if !origin_matches {
-            return crate::error::ApiError::forbidden("请求来源校验失败").into_response();
-        }
-    }
-    let session_token = request
-        .headers()
-        .get(header::COOKIE)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|cookies| {
-            cookies
-                .split(';')
-                .filter_map(|part| part.trim().split_once('='))
-                .find_map(|(name, value)| {
-                    (name == state.config.cookie_name()).then(|| value.to_owned())
-                })
-        });
+    let session_token = auth::cookie_value(request.headers(), state.config.cookie_name());
+    let mut auth_context = None;
     let authenticated_token = if let Some(token) = session_token {
         match auth::authenticate_session_token(&state, &token).await {
             Ok(user) => {
-                request.extensions_mut().insert(user);
+                auth_context = Some(auth::AuthContext {
+                    user,
+                    mechanism: auth::AuthMechanism::Session,
+                });
                 Some(token)
             }
             Err(error) => {
@@ -279,17 +253,40 @@ async fn csrf_guard(
     } else {
         None
     };
-    if request.extensions().get::<auth::AuthUser>().is_none()
+    if auth_context.is_none()
         && let Some(token) = auth::bearer_token(request.headers())
     {
         match auth::authenticate_api_key(&state, token).await {
             Ok(user) => {
-                request.extensions_mut().insert(user);
+                auth_context = Some(auth::AuthContext {
+                    user,
+                    mechanism: auth::AuthMechanism::ApiKey,
+                });
             }
             Err(error) => {
                 tracing::debug!(?error, "bearer API key was not valid");
             }
         }
+    }
+    let unsafe_method = !matches!(
+        *request.method(),
+        Method::GET | Method::HEAD | Method::OPTIONS
+    );
+    let uses_session = auth_context
+        .as_ref()
+        .is_some_and(|context| context.mechanism == auth::AuthMechanism::Session);
+    if unsafe_method && uses_session {
+        let origin_matches = request
+            .headers()
+            .get(header::ORIGIN)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|origin| origin.trim_end_matches('/') == state.config.public_base_url);
+        if !origin_matches {
+            return crate::error::ApiError::forbidden("请求来源校验失败").into_response();
+        }
+    }
+    if let Some(context) = auth_context {
+        request.extensions_mut().insert(context);
     }
     let mut response = next.run(request).await;
     if response.status().is_success()

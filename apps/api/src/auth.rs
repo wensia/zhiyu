@@ -38,6 +38,18 @@ pub struct AuthUser {
     pub session_hash: Option<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthMechanism {
+    Session,
+    ApiKey,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AuthContext {
+    pub user: AuthUser,
+    pub mechanism: AuthMechanism,
+}
+
 impl FromRequestParts<AppState> for AuthUser {
     type Rejection = ApiError;
 
@@ -45,8 +57,8 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        if let Some(user) = parts.extensions.get::<Self>() {
-            return Ok(user.clone());
+        if let Some(context) = parts.extensions.get::<AuthContext>() {
+            return Ok(context.user.clone());
         }
         if let Some(token) = cookie_value(&parts.headers, state.config.cookie_name())
             && let Ok(user) = authenticate_session_token(state, &token).await
@@ -597,7 +609,7 @@ fn hash_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(header::COOKIE)?
         .to_str()

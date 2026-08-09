@@ -297,6 +297,101 @@ async fn api_key_write_does_not_require_csrf_origin() {
 }
 
 #[tokio::test]
+async fn expired_session_cookie_falls_back_to_bearer_without_csrf_check() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "expired-cookie@zhiyu.local")
+        .await
+        .unwrap();
+    let (status, _, _) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "Bearer 现金", "accountType": "cash" })),
+        Some("zhiyu_session=definitely-expired"),
+        Some(&format!("Bearer {key}")),
+        Some("https://wrong-origin.example"),
+        Some("expired-cookie-bearer-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn valid_session_cookie_with_wrong_origin_is_forbidden() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("wrong-origin@zhiyu.local").await;
+    let (status, _, body) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "错误来源", "accountType": "cash" })),
+        Some(&cookie),
+        None,
+        Some("https://wrong-origin.example"),
+        Some("wrong-origin-session-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "forbidden");
+}
+
+#[tokio::test]
+async fn valid_session_cookie_with_matching_origin_succeeds() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("matching-origin@zhiyu.local").await;
+    let (status, _, _) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "正确来源", "accountType": "cash" })),
+        Some(&cookie),
+        None,
+        Some("http://test.local"),
+        Some("matching-origin-session-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn write_without_cookie_or_bearer_is_unauthorized() {
+    let test = TestApp::new().await;
+    let (status, _, body) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "未认证", "accountType": "cash" })),
+        None,
+        None,
+        None,
+        Some("no-credentials-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn similarly_named_cookie_with_bearer_does_not_trigger_csrf_check() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "similar-cookie@zhiyu.local")
+        .await
+        .unwrap();
+    let (status, _, _) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "无关 Cookie", "accountType": "cash" })),
+        Some("zhiyu_session_x=1"),
+        Some(&format!("Bearer {key}")),
+        Some("https://wrong-origin.example"),
+        Some("similar-cookie-bearer-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
 async fn setting_password_revokes_old_sessions_and_allows_new_login() {
     let test = TestApp::new().await;
     test.insert_verified_user("passwd@zhiyu.local", "a-very-secure-password")
@@ -2647,6 +2742,51 @@ async fn send_with_authorization(
         .header(header::AUTHORIZATION, authorization);
     if body.is_some() {
         builder = builder.header(header::CONTENT_TYPE, "application/json");
+    }
+    if let Some(key) = idempotency_key {
+        builder = builder.header("idempotency-key", key);
+    }
+    let request = builder
+        .body(Body::from(
+            body.map(|value| value.to_string()).unwrap_or_default(),
+        ))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    (status, headers, body)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_with_credentials(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    cookie: Option<&str>,
+    authorization: Option<&str>,
+    origin: Option<&str>,
+    idempotency_key: Option<&str>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if body.is_some() {
+        builder = builder.header(header::CONTENT_TYPE, "application/json");
+    }
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    if let Some(authorization) = authorization {
+        builder = builder.header(header::AUTHORIZATION, authorization);
+    }
+    if let Some(origin) = origin {
+        builder = builder.header(header::ORIGIN, origin);
     }
     if let Some(key) = idempotency_key {
         builder = builder.header("idempotency-key", key);
