@@ -28,13 +28,14 @@ use crate::{
 };
 
 const SESSION_DAYS: i64 = 30;
+const API_KEY_DAYS: i64 = 3650;
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub id: String,
     pub email: String,
     pub timezone: String,
-    pub session_hash: String,
+    pub session_hash: Option<String>,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -47,13 +48,19 @@ impl FromRequestParts<AppState> for AuthUser {
         if let Some(user) = parts.extensions.get::<Self>() {
             return Ok(user.clone());
         }
-        let token = cookie_value(&parts.headers, state.config.cookie_name())
-            .ok_or_else(|| ApiError::unauthorized("请先登录"))?;
-        authenticate_token(state, &token).await
+        if let Some(token) = cookie_value(&parts.headers, state.config.cookie_name())
+            && let Ok(user) = authenticate_session_token(state, &token).await
+        {
+            return Ok(user);
+        }
+        if let Some(token) = bearer_token(&parts.headers) {
+            return authenticate_api_key(state, token).await;
+        }
+        Err(ApiError::unauthorized("请先登录"))
     }
 }
 
-pub(crate) async fn authenticate_token(
+pub(crate) async fn authenticate_session_token(
     state: &AppState,
     token: &str,
 ) -> Result<AuthUser, ApiError> {
@@ -74,7 +81,7 @@ pub(crate) async fn authenticate_token(
         id: row.get(0)?,
         email: row.get(1)?,
         timezone: row.get(2)?,
-        session_hash: token_hash.clone(),
+        session_hash: Some(token_hash.clone()),
     };
     let last_seen: String = row.get(3)?;
     if chrono::DateTime::parse_from_rfc3339(&last_seen)
@@ -94,11 +101,44 @@ pub(crate) async fn authenticate_token(
     Ok(user)
 }
 
+pub(crate) async fn authenticate_api_key(
+    state: &AppState,
+    token: &str,
+) -> Result<AuthUser, ApiError> {
+    let token_hash = hash_token(token);
+    let conn = state.connection().await?;
+    let now = Utc::now();
+    let mut rows = conn
+        .query(
+            "SELECT u.id, u.email, u.timezone FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.token_hash = ?1 AND k.expires_at > ?2 AND u.email_verified_at IS NOT NULL",
+            params![token_hash.clone(), now.to_rfc3339()],
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| ApiError::unauthorized("API 密钥无效或已过期"))?;
+    let user = AuthUser {
+        id: row.get(0)?,
+        email: row.get(1)?,
+        timezone: row.get(2)?,
+        session_hash: None,
+    };
+    drop(rows);
+    conn.execute(
+        "UPDATE api_keys SET last_used_at = ?1 WHERE token_hash = ?2",
+        params![now.to_rfc3339(), token_hash],
+    )
+    .await?;
+    Ok(user)
+}
+
 #[utoipa::path(post, path = "/api/v1/auth/register", request_body = RegisterRequest, responses((status = 201, body = MessageResponse), (status = 422, body = crate::error::ErrorBody)))]
 pub async fn register(
     State(state): State<AppState>,
     Json(input): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<MessageResponse>), ApiError> {
+    require_email_delivery(&state)?;
     let email = validate_email(&input.email)?;
     validate_password(&input.password)?;
     let timezone = validate_timezone(input.timezone.as_deref())?;
@@ -154,6 +194,7 @@ pub async fn verify_email(
     State(state): State<AppState>,
     Json(input): Json<TokenRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     consume_email_token(&state, &input.token, "verify_email", None).await?;
     Ok(Json(MessageResponse {
         message: "邮箱验证成功，现在可以登录".into(),
@@ -165,6 +206,7 @@ pub async fn resend_verification(
     State(state): State<AppState>,
     Json(input): Json<EmailRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     let email = validate_email(&input.email)?;
     state
         .rate_limiter
@@ -253,12 +295,14 @@ pub async fn login(
 
 #[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 200, body = MessageResponse)), security(("cookieAuth" = [])))]
 pub async fn logout(State(state): State<AppState>, user: AuthUser) -> Result<Response, ApiError> {
-    let conn = state.connection().await?;
-    conn.execute(
-        "DELETE FROM sessions WHERE token_hash = ?1 AND user_id = ?2",
-        params![user.session_hash, user.id],
-    )
-    .await?;
+    if let Some(session_hash) = user.session_hash {
+        let conn = state.connection().await?;
+        conn.execute(
+            "DELETE FROM sessions WHERE token_hash = ?1 AND user_id = ?2",
+            params![session_hash, user.id],
+        )
+        .await?;
+    }
     let mut response = Json(MessageResponse {
         message: "已退出登录".into(),
     })
@@ -286,6 +330,7 @@ pub async fn forgot_password(
     State(state): State<AppState>,
     Json(input): Json<EmailRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     let email = validate_email(&input.email)?;
     state
         .rate_limiter
@@ -323,6 +368,7 @@ pub async fn reset_password(
     State(state): State<AppState>,
     Json(input): Json<ResetPasswordRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     validate_password(&input.new_password)?;
     let password_hash = hash_password(input.new_password).await?;
     consume_email_token(&state, &input.token, "reset_password", Some(password_hash)).await?;
@@ -418,21 +464,33 @@ fn generic_email_message() -> MessageResponse {
     }
 }
 
-/// 桌面端单机模式的本地用户引导。
+fn require_email_delivery(state: &AppState) -> Result<(), ApiError> {
+    if state.config.email_delivery_available() {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "email_unavailable",
+            "self-host 模式未配置邮件发送服务，此功能不可用",
+        ))
+    }
+}
+
+/// 为机器调用方签发长期 API 密钥。返回值是唯一一次可见的明文，数据库只保存哈希。
 ///
-/// 桌面版没有注册与邮箱验证的意义：首次启动静默建一个已验证的本地用户，之后每次
-/// 启动复用它并签发新会话。返回值是可直接下发的 `Set-Cookie` 头，调用方负责让
-/// webview 带上它——此后所有请求都与网页版走同一套 `AuthUser` 提取逻辑。
-pub async fn ensure_local_session(state: &AppState, email: &str) -> Result<String, ApiError> {
+/// 重复签发不会撤销任何仍有效的密钥；只清理已过期项，避免一次 CLI 重跑让正在使用
+/// 旧密钥的集成立刻掉线。
+pub async fn issue_api_key(state: &AppState, email: &str) -> Result<String, ApiError> {
+    let email = validate_email(email)?;
     let conn = state.connection().await?;
     let now = Utc::now();
     let mut rows = conn
-        .query("SELECT id FROM users WHERE email = ?1", [email])
+        .query("SELECT id FROM users WHERE email = ?1", [email.clone()])
         .await?;
     let user_id = match rows.next().await? {
         Some(row) => row.get::<String>(0)?,
         None => {
-            // 本地用户从不通过密码登录，随机口令只是为了满足 NOT NULL 且不可猜。
+            // 机器用户不通过密码登录，随机口令只是为了满足 NOT NULL 且不可猜。
             let mut secret = [0_u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut secret);
             let password_hash = hash_password(URL_SAFE_NO_PAD.encode(secret)).await?;
@@ -451,24 +509,24 @@ pub async fn ensure_local_session(state: &AppState, email: &str) -> Result<Strin
             id
         }
     };
-    // 单机模式下只该存在一条会话。旧 token 的明文没有留存、无法复用，所以每次启动
-    // 都要重新签发；但必须同时清掉上一条，否则每启动一次就在表里堆一行永不回收的
-    // 凭据哈希。
-    conn.execute("DELETE FROM sessions WHERE user_id = ?1", [user_id.clone()])
-        .await?;
+    conn.execute(
+        "DELETE FROM api_keys WHERE user_id = ?1 AND expires_at <= ?2",
+        params![user_id.clone(), now.to_rfc3339()],
+    )
+    .await?;
     let (token, token_hash) = new_token();
     conn.execute(
-        "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        "INSERT INTO api_keys(id, user_id, token_hash, created_at, last_used_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
         params![
             Uuid::now_v7().to_string(),
             user_id,
             token_hash,
             now.to_rfc3339(),
-            (now + Duration::days(SESSION_DAYS)).to_rfc3339()
+            (now + Duration::days(API_KEY_DAYS)).to_rfc3339()
         ],
     )
     .await?;
-    Ok(session_cookie_header(&state.config, &token, false))
+    Ok(token)
 }
 
 async fn hash_password(password: String) -> Result<String, ApiError> {
@@ -514,6 +572,12 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .split(';')
         .filter_map(|part| part.trim().split_once('='))
         .find_map(|(key, value)| (key == name).then(|| value.to_owned()))
+}
+
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("Bearer") && !token.trim().is_empty()).then(|| token.trim())
 }
 
 pub(crate) fn session_cookie_header(

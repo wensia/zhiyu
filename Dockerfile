@@ -12,8 +12,9 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY apps/api ./apps/api
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p zhiyu-api --bin zhiyu-api \
-    && cp /src/target/release/zhiyu-api /tmp/zhiyu-api
+    cargo build --release --locked -p zhiyu-api --bin zhiyu-api --bin zhiyu-api-key \
+    && cp /src/target/release/zhiyu-api /tmp/zhiyu-api \
+    && cp /src/target/release/zhiyu-api-key /tmp/zhiyu-api-key
 
 FROM node:22-bookworm-slim AS web-builder
 
@@ -40,6 +41,7 @@ RUN sed -i \
 
 WORKDIR /app
 COPY --from=api-builder /tmp/zhiyu-api /usr/local/bin/zhiyu-api
+COPY --from=api-builder /tmp/zhiyu-api-key /usr/local/bin/zhiyu-api-key
 COPY --from=web-builder /src/apps/web/dist ./web
 
 RUN mkdir -p /data/dev-mail \
@@ -47,7 +49,7 @@ RUN mkdir -p /data/dev-mail \
 
 USER nobody:nogroup
 
-ENV APP_ENV=development \
+ENV APP_ENV=self-host \
     BIND_ADDR=0.0.0.0:8790 \
     PUBLIC_BASE_URL=https://zhiyu.askfish.net \
     DATABASE_URL=file:/data/preview.db \

@@ -5896,22 +5896,9 @@ dependencies = [
 name = "zhiyu-desktop"
 version = "0.1.0"
 dependencies = [
- "anyhow",
- "async-trait",
- "axum 0.8.9",
- "chrono",
- "libsql",
- "serde",
- "serde_json",
  "tauri",
  "tauri-build",
- "tempfile",
- "tokio",
- "tower 0.5.3",
- "tracing",
  "tracing-subscriber",
- "uuid",
- "zhiyu-api",
 ]
 
 [[package]]

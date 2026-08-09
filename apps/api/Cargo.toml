@@ -12,6 +12,10 @@ path = "src/lib.rs"
 name = "zhiyu-api"
 path = "src/main.rs"
 
+[[bin]]
+name = "zhiyu-api-key"
+path = "src/bin/api_key.rs"
+
 [dependencies]
 anyhow.workspace = true
 argon2.workspace = true

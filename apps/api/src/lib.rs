@@ -31,7 +31,7 @@ use tower_http::{
 };
 use utoipa::{
     Modify, OpenApi,
-    openapi::security::{ApiKey, ApiKeyValue, SecurityScheme},
+    openapi::security::{ApiKey, ApiKeyValue, Http, HttpAuthScheme, SecurityScheme},
 };
 
 use crate::{config::Config, email::EmailSender, rate_limit::RateLimiter};
@@ -62,6 +62,10 @@ impl Modify for SecurityAddon {
             components.add_security_scheme(
                 "cookieAuth",
                 SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("zhiyu_session"))),
+            );
+            components.add_security_scheme(
+                "bearerAuth",
+                SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
             );
         }
     }
@@ -256,7 +260,7 @@ async fn csrf_guard(
                 })
         });
     let authenticated_token = if let Some(token) = session_token {
-        match auth::authenticate_token(&state, &token).await {
+        match auth::authenticate_session_token(&state, &token).await {
             Ok(user) => {
                 request.extensions_mut().insert(user);
                 Some(token)
@@ -269,6 +273,18 @@ async fn csrf_guard(
     } else {
         None
     };
+    if request.extensions().get::<auth::AuthUser>().is_none()
+        && let Some(token) = auth::bearer_token(request.headers())
+    {
+        match auth::authenticate_api_key(&state, token).await {
+            Ok(user) => {
+                request.extensions_mut().insert(user);
+            }
+            Err(error) => {
+                tracing::debug!(?error, "bearer API key was not valid");
+            }
+        }
+    }
     let mut response = next.run(request).await;
     if response.status().is_success()
         && !response.headers().contains_key(header::SET_COOKIE)

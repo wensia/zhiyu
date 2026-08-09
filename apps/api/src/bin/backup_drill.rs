@@ -1,20 +1,8 @@
-use std::{path::Path, process::Command};
+use std::path::Path;
 
 use anyhow::{Context, Result, bail};
 use sha2::{Digest, Sha256};
 use zhiyu_api::backup::{self, MANIFEST_IN_REPO, Manifest, SNAPSHOT_IN_REPO, STAGING_IN_REPO};
-
-fn git(cwd: &Path, args: &[&str]) -> Result<()> {
-    let output = Command::new("git").arg("-C").arg(cwd).args(args).output()?;
-    if !output.status.success() {
-        bail!(
-            "git {} 失败：{}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
 
 async fn file_sha256(path: &Path) -> Result<String> {
     Ok(format!(
@@ -46,47 +34,22 @@ async fn main() -> Result<()> {
     .await?;
     drop(conn);
 
-    let repo = root.join("backup-work");
-    let remote = root.join("remote.git");
-    std::fs::create_dir_all(&repo)?;
-    git(&repo, &["init", "--quiet", "--initial-branch", "main"])?;
-    git(&repo, &["config", "user.email", "drill@example.com"])?;
-    git(&repo, &["config", "user.name", "backup drill"])?;
-    git(
-        &root,
-        &[
-            "init",
-            "--quiet",
-            "--bare",
-            "--initial-branch",
-            "main",
-            remote.to_str().context("临时路径不是 UTF-8")?,
-        ],
-    )?;
-    git(
-        &repo,
-        &["remote", "add", "origin", remote.to_str().unwrap()],
-    )?;
+    let backup_dir = root.join("backup");
+    tokio::fs::create_dir_all(backup_dir.join("data")).await?;
     let (snapshot, manifest) =
-        backup::create_snapshot(&db, &repo.join(STAGING_IN_REPO), "backup-drill").await?;
+        backup::create_snapshot(&db, &backup_dir.join(STAGING_IN_REPO), "backup-drill").await?;
     let expected_database_sha256 = manifest.database_sha256.clone();
-    backup::commit_snapshot(&repo, &snapshot, &manifest).await?;
-    backup::push(&repo, "origin", "main").await?;
-    println!("PASS 备份已提交并由本地裸远端确认：{expected_database_sha256}");
+    tokio::fs::write(
+        backup_dir.join(MANIFEST_IN_REPO),
+        serde_json::to_vec_pretty(&manifest)?,
+    )
+    .await?;
+    tokio::fs::rename(&snapshot, backup_dir.join(SNAPSHOT_IN_REPO)).await?;
+    println!("PASS 可信快照与 manifest 已生成：{expected_database_sha256}");
     drop(db);
 
     std::fs::remove_file(&live)?;
-    let rescue = root.join("rescue-clone");
-    git(
-        &root,
-        &[
-            "clone",
-            "--quiet",
-            remote.to_str().unwrap(),
-            rescue.to_str().unwrap(),
-        ],
-    )?;
-    let report = backup::restore(&rescue, &live, &root.join("quarantine")).await?;
+    let report = backup::restore(&backup_dir, &live, &root.join("quarantine")).await?;
     let restored = libsql::Builder::new_local(&live).build().await?;
     let conn = restored.connect()?;
     let mut rows = conn
@@ -100,17 +63,17 @@ async fn main() -> Result<()> {
     drop(conn);
     drop(restored);
     println!(
-        "PASS 原库销毁后从独立 clone 恢复，database_sha256 一致；旧库隔离到 {}",
+        "PASS 原库销毁后从快照目录恢复，database_sha256 一致；旧库隔离到 {}",
         report.quarantined_to.display()
     );
 
     let production_before = tokio::fs::read(&live).await?;
-    let manifest_path = rescue.join(MANIFEST_IN_REPO);
+    let manifest_path = backup_dir.join(MANIFEST_IN_REPO);
     let original_manifest = tokio::fs::read(&manifest_path).await?;
     let mut newer: Manifest = serde_json::from_slice(&original_manifest)?;
     newer.schema_migration_versions.push(999);
     tokio::fs::write(&manifest_path, serde_json::to_vec_pretty(&newer)?).await?;
-    let newer_error = backup::restore(&rescue, &live, &root.join("newer-quarantine"))
+    let newer_error = backup::restore(&backup_dir, &live, &root.join("newer-quarantine"))
         .await
         .expect_err("新版本备份必须被拒绝");
     if tokio::fs::read(&live).await? != production_before {
@@ -121,7 +84,7 @@ async fn main() -> Result<()> {
     let mut bad_hash: Manifest = serde_json::from_slice(&original_manifest)?;
     bad_hash.database_sha256 = "00".repeat(32);
     tokio::fs::write(&manifest_path, serde_json::to_vec_pretty(&bad_hash)?).await?;
-    let hash_error = backup::restore(&rescue, &live, &root.join("hash-quarantine"))
+    let hash_error = backup::restore(&backup_dir, &live, &root.join("hash-quarantine"))
         .await
         .expect_err("哈希错误必须被拒绝");
     if tokio::fs::read(&live).await? != production_before {
@@ -129,9 +92,8 @@ async fn main() -> Result<()> {
     }
     println!("PASS 哈希不符被拒绝且生产库未变：{hash_error}");
 
-    // 保证演练读取的权威快照确实来自远端 clone，而不是源机器的旧文件。
-    if !rescue.join(SNAPSHOT_IN_REPO).exists() {
-        bail!("独立 clone 中没有备份快照");
+    if !backup_dir.join(SNAPSHOT_IN_REPO).exists() {
+        bail!("备份目录中没有快照");
     }
     println!("BACKUP DRILL PASSED");
     Ok(())

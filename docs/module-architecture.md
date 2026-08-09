@@ -1,5 +1,9 @@
 # 知余 local-first Platform Kernel 与模块架构
 
+> **SUPERSEDED：** 本文的 **D1、D4、D5 与 §1.1** 已由
+> [`docs/adr/0001-server-authoritative-thin-client.md`](adr/0001-server-authoritative-thin-client.md)
+> 作废。当前架构判断以 ADR-0001 与代码实现为准。
+>
 > 状态：**D1–D10 已决策；Phase 0 证据基线收口中。本文与实现候选尚未形成可复核的提交基线，不代表已合并、打包或发布**。
 >
 > 所有者于 2026-08-06 确认：Platform Kernel 是产品根；Finance、Shard、Collections 是同级模块；根签名 control records、加密签名的 Vault platform/domain events 与认证加密对象是唯一同步真相；JSONL 只用于显式导出；归档不改变财务余额；桌面端采用可折叠左侧边栏 + 页面，模块可固定到左侧边栏。
