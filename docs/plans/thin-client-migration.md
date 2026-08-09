@@ -65,15 +65,42 @@
 
 | 任务 | 状态 | 备注 |
 |---|---|---|
-| T1 备份（手动首次） | **已完成** | `~/zhiyu-backups/zhiyu-prod-20260810-001104.db`，integrity ok / fk 0，双重校验 |
-| T1 备份脚本 | **需返工** | `scripts/server-backup.sh` 有三个阻碍，见下 |
-| T4 桌面壳瘦身 | **已完成** | 净删 2945 行，`lib.rs` 425→76，`cargo check` 通过 |
-| T2 self-host 模式 | 待做 | |
-| T3 API 密钥 | 待做 | |
-| T5 git 备份下线 | 待做 | |
-| T6 HTTPS/cookie 实测 | 待做 | 需真实 Tauri 窗口 |
-| T7 文档 | 部分 | ADR-0001 已写，还差 supersede 标记 |
-| **生产部署** | **新增阻塞项** | 见下 |
+| T1 备份（手动） | **已完成** | 本机 + 服务器各一份，integrity ok / fk 0，双重校验 |
+| T1 备份脚本 | **已返工，未验证** | 服务器**未装 restic**，脚本尚未实跑过 |
+| T4 桌面壳瘦身 | **已完成** | 净删 2945 行，`lib.rs` 425→76 |
+| T2 self-host 模式 | **已完成并上线** | 邮件路由返回 `email_unavailable`，已线上验证 |
+| T3 API 密钥 | **已完成并上线** | Bearer 认证、CSRF 豁免均已线上验证 |
+| T5 git 备份下线 | **已完成** | `backup.rs` 873→573 |
+| T6 HTTPS/cookie 实测 | 待做 | 需真实 Tauri 窗口验证 WebView 持有 `__Host-` cookie |
+| T7 文档 | **已完成** | ADR-0001 + supersede 标记 |
+| **生产部署** | **已完成** | 见下 |
+
+### 生产部署结果（2026-08-10 00:59）
+
+镜像重建并重启，`zhiyu` 容器 healthy。构建前抓到并修掉一个阻塞：
+`Cargo.toml` 的 workspace 含 `apps/desktop/src-tauri`，而 Dockerfile 只 `COPY apps/api`，
+cargo 加载 workspace 时因缺 member manifest 整体失败。补 stub manifest 解决（`10d0046`）。
+8-04 那次构建时桌面端尚未进 workspace，故此前未暴露。
+
+线上验证全部通过：
+
+| 项 | 结果 |
+|---|---|
+| 迁移版本 | 7 → **10**（8/9/10 全部应用） |
+| 新表 | `ledger_transactions`、`api_keys` 均存在 |
+| 原有数据 | `debts=5` `repayments=28` `accounts=3`，integrity ok |
+| `/readyz` | HTTP 200 |
+| `GET /api/v1/transactions` + Bearer | HTTP 200 |
+| self-host 邮件路由 | `email_unavailable` |
+| API 密钥读取真实账本 | 通过 |
+| 无 Origin 的 Bearer 写请求 | HTTP 422（非 403，证明 header 认证不进 CSRF 分支） |
+
+回滚材料：`/opt/zhiyu/backups/preview.db.before-thin-client.20260810-004708`
+（本机同名副本一份），旧源码目录 `/opt/zhiyu/app.bak-*`。
+
+**遗留**：服务器未装 restic，`scripts/server-backup.sh` 至今没有实跑验证过；
+签发 API 密钥的 CLI 是 `docker exec zhiyu zhiyu-api-key <邮箱>`，
+密钥必须签给 `demo-20260802@zhiyu.app` 才能读到真实账本。
 
 ### 生产环境实测结论（2026-08-10）
 
