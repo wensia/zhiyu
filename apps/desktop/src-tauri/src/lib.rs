@@ -1,4 +1,5 @@
 mod backup_config;
+mod backup_github;
 mod backup_http;
 mod backup_page;
 mod backup_runner;
@@ -15,7 +16,7 @@ use axum::{
     routing::get,
 };
 use tauri::{
-    Manager, WebviewUrl, WebviewWindowBuilder,
+    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder,
     menu::{MenuBuilder, MenuItem, SubmenuBuilder},
 };
 use tracing_subscriber::EnvFilter;
@@ -82,6 +83,8 @@ async fn start_server(
     data_dir: PathBuf,
     web_dist_dir: PathBuf,
     backup_context: backup_runner::BackupContext,
+    backup_now_item: MenuItem<tauri::Wry>,
+    app_handle: AppHandle,
 ) -> anyhow::Result<u16> {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let local_addr = listener.local_addr()?;
@@ -109,6 +112,9 @@ async fn start_server(
     let desktop_backup_router = backup_http::router(
         backup_http::BackupHttpState {
             backup: backup_context.clone(),
+            backup_now: backup_now_item,
+            app_handle,
+            backup_settings_url: format!("{public_base_url}{}", backup_http::BACKUP_PATH),
         },
         public_base_url,
     );
@@ -180,6 +186,8 @@ fn run_pending_restore(
         &data_dir.join("zhiyu.db"),
         &data_dir.join("quarantine"),
     ))?;
+    backup_config::mark_restore_completed(config_dir)
+        .context("数据库已经恢复，但无法解除同步恢复门禁")?;
     std::fs::remove_file(&marker).context("恢复成功，但无法删除 pending-restore 标记")?;
     tracing::info!(
         quarantine = %report.quarantined_to.display(),
@@ -238,8 +246,11 @@ pub fn run() {
                 AUTO_BACKUP_WATCHDOG,
             );
 
+            let sync_ready =
+                tauri::async_runtime::block_on(backup_runner::setup_state(&backup_context))
+                    .sync_enabled;
             let backup_now_item =
-                MenuItem::with_id(app, BACKUP_NOW, "立即备份", true, None::<&str>)?;
+                MenuItem::with_id(app, BACKUP_NOW, "立即备份", sync_ready, None::<&str>)?;
             let restore_item =
                 MenuItem::with_id(app, RESTORE_FROM_BACKUP, "从备份恢复…", true, None::<&str>)?;
             let open_settings_item =
@@ -250,7 +261,7 @@ pub fn run() {
             let menu = MenuBuilder::new(app).item(&backup_menu).build()?;
             app.set_menu(menu)?;
             app.manage(BackupMenuItems {
-                backup_now: backup_now_item,
+                backup_now: backup_now_item.clone(),
                 restore: restore_item,
             });
             app.manage(backup_context.clone());
@@ -260,6 +271,8 @@ pub fn run() {
                 data_dir,
                 web_dist_dir,
                 backup_context,
+                backup_now_item.clone(),
+                app.handle().clone(),
             ))?;
             let public_base_url = format!("http://127.0.0.1:{port}");
             app.manage(DesktopServer {
@@ -320,23 +333,9 @@ pub fn run() {
                     };
                 }
                 OPEN_BACKUP_SETTINGS => {
-                    if let Some(window) = app.get_webview_window("backup-settings") {
-                        window.show().ok();
-                        window.set_focus().ok();
-                        return;
-                    }
                     let server = app.state::<DesktopServer>();
                     let url = format!("{}{}", server.public_base_url, backup_http::BACKUP_PATH);
-                    let result = url.parse().map_err(anyhow::Error::from).and_then(|url| {
-                        WebviewWindowBuilder::new(app, "backup-settings", WebviewUrl::External(url))
-                            .title("知余 · 备份设置")
-                            .inner_size(720.0, 640.0)
-                            .min_inner_size(620.0, 520.0)
-                            .build()
-                            .map(|_| ())
-                            .map_err(anyhow::Error::from)
-                    });
-                    if let Err(error) = result {
+                    if let Err(error) = open_backup_settings(app, &url) {
                         tracing::error!(?error, "无法打开备份设置窗口");
                     }
                 }
@@ -345,6 +344,21 @@ pub fn run() {
         })
         .run(tauri::generate_context!())
         .expect("启动知余桌面版失败");
+}
+
+pub(crate) fn open_backup_settings(app: &AppHandle, url: &str) -> anyhow::Result<()> {
+    if let Some(window) = app.get_webview_window("backup-settings") {
+        window.show()?;
+        window.set_focus()?;
+        return Ok(());
+    }
+    let url = url.parse()?;
+    WebviewWindowBuilder::new(app, "backup-settings", WebviewUrl::External(url))
+        .title("知余 · 备份设置")
+        .inner_size(720.0, 640.0)
+        .min_inner_size(620.0, 520.0)
+        .build()?;
+    Ok(())
 }
 
 #[cfg(test)]

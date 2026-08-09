@@ -7,6 +7,7 @@ import { api } from "./api/client"
 import { BrandMark } from "./components/brand-mark"
 import { Button, useToast } from "./components/ui"
 import { AccountWorkspace } from "./features/account-workspace"
+import { DesktopBackupFooter } from "./features/desktop-backup-footer"
 import { DebtDetailPage, DebtWorkspace } from "./features/debt-workspace"
 import { TransactionWorkspace } from "./features/transaction-workspace"
 import {
@@ -96,11 +97,13 @@ export function AppShell({ email }: { email: string }) {
             </NavLink>
           </nav>
         </div>
-        <div className="account-block">
-          <span className="account-avatar"><CircleUserRoundIcon aria-hidden="true" /></span>
-          <div><strong>{email}</strong><span>个人账户</span></div>
-          <Button aria-label="退出登录" disabled={logout.isPending} onClick={() => logout.mutate()} size="icon" variant="ghost"><LogOutIcon /></Button>
-        </div>
+        {email === "local@zhiyu.desktop"
+          ? <DesktopBackupFooter />
+          : <div className="account-block">
+              <span className="account-avatar"><CircleUserRoundIcon aria-hidden="true" /></span>
+              <div><strong>{email}</strong><span>个人账户</span></div>
+              <Button aria-label="退出登录" disabled={logout.isPending} onClick={() => logout.mutate()} size="icon" variant="ghost"><LogOutIcon /></Button>
+            </div>}
       </aside>
       <section className="app-frame">
         <header className="topbar">

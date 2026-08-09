@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 
 const CONFIG_FILE: &str = "backup.json";
+const TEMPLATE_REPO_PATH: &str = "/请填写/ledger-backup";
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -16,6 +17,12 @@ pub struct BackupConfig {
     pub branch: String,
     #[serde(default = "default_auto_backup")]
     pub auto_backup: bool,
+    /// GitHub `owner/name`。旧配置没有该字段时会从 origin URL 尝试识别。
+    #[serde(default)]
+    pub github_repository: Option<String>,
+    /// 已绑定远端备份但尚未完成离线恢复时，禁止本机继续向远端写入。
+    #[serde(default)]
+    pub requires_restore: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -38,11 +45,17 @@ pub fn path(config_dir: &Path) -> PathBuf {
 
 fn template() -> BackupConfig {
     BackupConfig {
-        repo_path: PathBuf::from("/请填写/ledger-backup"),
+        repo_path: PathBuf::from(TEMPLATE_REPO_PATH),
         remote: "origin".into(),
         branch: "main".into(),
         auto_backup: true,
+        github_repository: None,
+        requires_restore: false,
     }
+}
+
+pub fn is_unconfigured_template(config: &BackupConfig) -> bool {
+    config.repo_path == Path::new(TEMPLATE_REPO_PATH) && config.github_repository.is_none()
 }
 
 /// 读取备份配置；第一次启动会写入模板，并用 `None` 表示尚未配置。
@@ -138,6 +151,23 @@ pub fn save(config_dir: &Path, config: &BackupConfig) -> Result<ConfigValidation
     Ok(validation)
 }
 
+pub fn mark_restore_completed(config_dir: &Path) -> Result<()> {
+    let mut config = read_existing(config_dir)?;
+    config.requires_restore = false;
+    save(config_dir, &config)?;
+    Ok(())
+}
+
+pub fn set_auto_backup(config_dir: &Path, enabled: bool) -> Result<BackupConfig> {
+    let mut config = read_existing(config_dir)?;
+    if enabled && config.requires_restore {
+        bail!("必须先从已绑定的备份恢复，才能启用自动同步");
+    }
+    config.auto_backup = enabled;
+    save(config_dir, &config)?;
+    Ok(config)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -147,6 +177,9 @@ mod tests {
         let root = tempfile::tempdir().unwrap();
         assert!(load(root.path()).unwrap().is_none());
         assert!(path(root.path()).exists());
+        assert!(is_unconfigured_template(
+            &read_for_display(root.path()).unwrap()
+        ));
     }
 
     #[test]
@@ -161,6 +194,8 @@ mod tests {
                 remote: "origin".into(),
                 branch: "main".into(),
                 auto_backup: true,
+                github_repository: None,
+                requires_restore: false,
             })
             .unwrap(),
         )
@@ -183,6 +218,8 @@ mod tests {
                 remote: "origin".into(),
                 branch: "main".into(),
                 auto_backup: true,
+                github_repository: None,
+                requires_restore: false,
             },
         );
         assert!(result.is_err());

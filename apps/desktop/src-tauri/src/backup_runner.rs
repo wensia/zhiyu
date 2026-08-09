@@ -17,6 +17,7 @@ use tokio::{
 
 use crate::{
     backup_config::{self, BackupConfig},
+    backup_github::{GitHubService, SetupState},
     backup_state::{self, BackupStatus, SharedBackupStatus},
 };
 
@@ -77,6 +78,7 @@ pub struct BackupContext {
     pub config_dir: PathBuf,
     pub database_path: PathBuf,
     pub status: SharedBackupStatus,
+    pub github: GitHubService,
     run_lock: Arc<Mutex<()>>,
     operations: Arc<dyn BackupOperations>,
     write_generation: Arc<AtomicU64>,
@@ -90,6 +92,7 @@ impl BackupContext {
             data_dir,
             config_dir,
             status,
+            github: GitHubService::default(),
             run_lock: Arc::new(Mutex::new(())),
             operations: Arc::new(RealBackupOperations),
             write_generation: Arc::new(AtomicU64::new(0)),
@@ -152,8 +155,7 @@ pub async fn run_once(ctx: &BackupContext) -> Result<()> {
 
 async fn run_pipeline(ctx: &BackupContext) -> Result<()> {
     let started_generation = ctx.write_generation.load(Ordering::SeqCst);
-    let config = backup_config::load(&ctx.config_dir)?
-        .context("备份尚未配置；请先打开“备份设置…”完成配置")?;
+    let config = ctx.github.require_sync_ready(&ctx.config_dir).await?;
     let (snapshot, manifest) = ctx
         .operations
         .create_snapshot(&ctx.database_path, &config.repo_path)
@@ -222,7 +224,7 @@ async fn debounce_loop(ctx: BackupContext, delay: Duration) {
                 () = ctx.dirty_notify.notified() => continue,
             }
         }
-        if auto_backup_enabled(&ctx)
+        if auto_backup_enabled(&ctx).await
             && ctx.status.lock().await.dirty
             && let Err(error) = run_once(&ctx).await
         {
@@ -234,7 +236,7 @@ async fn debounce_loop(ctx: BackupContext, delay: Duration) {
 async fn watchdog_loop(ctx: BackupContext, delay: Duration) {
     loop {
         tokio::time::sleep(delay).await;
-        if auto_backup_enabled(&ctx)
+        if auto_backup_enabled(&ctx).await
             && ctx.status.lock().await.dirty
             && let Err(error) = run_once(&ctx).await
         {
@@ -243,11 +245,12 @@ async fn watchdog_loop(ctx: BackupContext, delay: Duration) {
     }
 }
 
-fn auto_backup_enabled(ctx: &BackupContext) -> bool {
-    backup_config::load(&ctx.config_dir)
+async fn auto_backup_enabled(ctx: &BackupContext) -> bool {
+    let configured = backup_config::load(&ctx.config_dir)
         .ok()
         .flatten()
-        .is_some_and(|config| config.auto_backup)
+        .is_some_and(|config| config.auto_backup);
+    configured && ctx.github.setup_state(&ctx.config_dir).await.sync_enabled
 }
 
 async fn initialize_pending_push(ctx: &BackupContext) -> Result<()> {
@@ -257,7 +260,7 @@ async fn initialize_pending_push(ctx: &BackupContext) -> Result<()> {
     let unpushed =
         backup_state::count_unpushed(&config.repo_path, &config.remote, &config.branch).await?;
     update_status(ctx, |status| status.unpushed_commits = unpushed).await?;
-    if unpushed > 0 {
+    if unpushed > 0 && ctx.github.setup_state(&ctx.config_dir).await.sync_enabled {
         retry_pending_push(ctx, &config).await?;
     }
     Ok(())
@@ -301,6 +304,10 @@ async fn update_status(ctx: &BackupContext, update: impl FnOnce(&mut BackupStatu
     let mut status = ctx.status.lock().await;
     update(&mut status);
     backup_state::persist(&ctx.data_dir, &status).await
+}
+
+pub async fn setup_state(ctx: &BackupContext) -> SetupState {
+    ctx.github.setup_state(&ctx.config_dir).await
 }
 
 async fn git_head(repo: &Path) -> Result<Option<String>> {
@@ -418,6 +425,8 @@ mod tests {
                 remote: "origin".into(),
                 branch: "main".into(),
                 auto_backup: true,
+                github_repository: Some("test/backup".into()),
+                requires_restore: false,
             })
             .unwrap(),
         )
@@ -427,6 +436,7 @@ mod tests {
             data_dir,
             config_dir,
             status: Arc::new(Mutex::new(BackupStatus::default())),
+            github: GitHubService::test_ready(),
             run_lock: Arc::new(Mutex::new(())),
             operations,
             write_generation: Arc::new(AtomicU64::new(0)),
@@ -459,6 +469,23 @@ mod tests {
         let status = ctx.status.lock().await.clone();
         assert!(!status.running);
         assert!(status.last_error.unwrap().contains("模拟快照失败"));
+    }
+
+    #[tokio::test]
+    async fn restore_required_blocks_backup_before_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let operations = Arc::new(FakeOperations {
+            starts: AtomicUsize::new(0),
+            fail: false,
+        });
+        let ctx = test_context(root.path(), operations.clone());
+        let mut config = backup_config::read_for_display(&ctx.config_dir).unwrap();
+        config.requires_restore = true;
+        config.auto_backup = false;
+        backup_config::save(&ctx.config_dir, &config).unwrap();
+        let error = run_once(&ctx).await.unwrap_err();
+        assert!(error.to_string().contains("先从该备份恢复"));
+        assert_eq!(operations.starts.load(Ordering::SeqCst), 0);
     }
 
     #[tokio::test]
@@ -518,6 +545,8 @@ mod tests {
                 remote: "origin".into(),
                 branch: "main".into(),
                 auto_backup: true,
+                github_repository: Some("test/backup".into()),
+                requires_restore: false,
             })
             .unwrap(),
         )
@@ -532,6 +561,8 @@ mod tests {
         drop(database);
         let status = Arc::new(Mutex::new(BackupStatus::default()));
         let context = BackupContext::new(data_dir, config_dir, status.clone());
+        let mut context = context;
+        context.github = GitHubService::test_ready();
         let task = tokio::spawn(debounce_loop(context.clone(), Duration::from_millis(10)));
 
         context.mark_dirty().await;
