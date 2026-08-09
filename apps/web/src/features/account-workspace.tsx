@@ -1,8 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArchiveIcon, PencilIcon, PlusIcon, RotateCcwIcon, SearchIcon, WalletCardsIcon } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
 import { ApiClientError, api } from "../api/client"
+import { useIdempotentMutation } from "../api/use-idempotent-mutation"
 import type { LedgerAccount, LedgerAccountType } from "../api/types"
 import {
   ActionMenu,
@@ -150,8 +151,8 @@ function AccountFormModal({
     setEmail("")
   }
 
-  const mutation = useMutation({
-    mutationFn: async () => {
+  const mutation = useIdempotentMutation({
+    mutationFn: async (_variables: void, write) => {
       if (!accountType) throw new Error("请选择账户类型")
       const normalizedName = name.trim()
       if (!structuredAccount && !normalizedName) throw new Error("请输入账户名称")
@@ -167,8 +168,8 @@ function AccountFormModal({
         email: accountType === "alipay_balance" ? normalizeEmail(email) : null,
       }
       const input = { accountType, name: normalizedName, note: note.trim(), openingBalanceCents: parseOpeningBalance(openingBalance), ...details }
-      if (account) return api.updateLedgerAccount(account.id, { ...input, version: account.version })
-      return api.createLedgerAccount(input)
+      if (account) return api.updateLedgerAccount(account.id, { ...input, version: account.version }, write)
+      return api.createLedgerAccount(input, write)
     },
     onSuccess: async () => {
       await onSaved()
@@ -357,10 +358,10 @@ export function AccountWorkspace() {
     const needle = search.trim().toLocaleLowerCase("zh-CN")
     return (query.data || []).filter((account) => (showArchived || !account.archived) && (!needle || ledgerAccountSearchText(account).toLocaleLowerCase("zh-CN").includes(needle)))
   }, [query.data, search, showArchived])
-  const archiveMutation = useMutation({
-    mutationFn: async (account: LedgerAccount) => account.archived
-      ? api.restoreLedgerAccount(account.id, account.version)
-      : api.archiveLedgerAccount(account.id, account.version),
+  const archiveMutation = useIdempotentMutation({
+    mutationFn: async (account: LedgerAccount, write) => account.archived
+      ? api.restoreLedgerAccount(account.id, account.version, write)
+      : api.archiveLedgerAccount(account.id, account.version, write),
     onSuccess: async (_, account) => {
       await refresh()
       setConfirming(undefined)

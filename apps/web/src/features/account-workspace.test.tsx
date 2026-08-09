@@ -138,7 +138,7 @@ describe("AccountWorkspace", () => {
       phone: null,
       email: null,
       openingBalanceCents: 0,
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("keeps a name entered before the first account type selection", async () => {
@@ -181,7 +181,7 @@ describe("AccountWorkspace", () => {
       phone: null,
       email: null,
       openingBalanceCents: 0,
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("validates and normalizes Alipay phone and email", async () => {
@@ -220,7 +220,7 @@ describe("AccountWorkspace", () => {
       phone: "+86 138-0013-8000",
       email: "user@example.com",
       openingBalanceCents: 0,
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it.each(["现金", "数字人民币", "其他账户"])("still requires a name for %s", async (typeLabel) => {
@@ -318,7 +318,7 @@ describe("AccountWorkspace", () => {
       email: null,
       version: 1,
       openingBalanceCents: 0,
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("groups every structured account form with the Kiln field rhythm", async () => {
@@ -370,7 +370,7 @@ describe("AccountWorkspace", () => {
       name: "",
       bankName: "浦发银行",
       version: 1,
-    })))
+    }), expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("preserves a custom bank name that matches the internal other-bank value", async () => {
@@ -391,6 +391,6 @@ describe("AccountWorkspace", () => {
     await waitFor(() => expect(api.updateLedgerAccount).toHaveBeenCalledWith("account-sentinel-bank", expect.objectContaining({
       bankName: OTHER_BANK_VALUE,
       version: 1,
-    })))
+    }), expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 })

@@ -218,7 +218,7 @@ describe("DebtWorkspace", () => {
       direction: "borrow_in",
       originKind: "cash_movement",
       principalCents: 100_000,
-    })))
+    }), expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("creates a cashless debt without choosing an account", async () => {
@@ -242,7 +242,7 @@ describe("DebtWorkspace", () => {
       direction: "borrow_in",
       originKind: "no_cash_movement",
       principalCents: 150_000,
-    })))
+    }), expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("shows a cashless debt as a confirmed payable with no account movement", async () => {
@@ -351,7 +351,7 @@ describe("DebtWorkspace", () => {
     const dialog = screen.getByRole("dialog", { name: "编辑债务" })
     expect(within(dialog).getByRole("combobox", { name: "付款账户" })).toHaveTextContent("微信零钱 · 微信支付-测试号")
     await user.click(within(dialog).getByRole("button", { name: "保存" }))
-    await waitFor(() => expect(api.updateDebt).toHaveBeenCalledWith("debt-1", expect.objectContaining({ accountId: "account-1" })))
+    await waitFor(() => expect(api.updateDebt).toHaveBeenCalledWith("debt-1", expect.objectContaining({ accountId: "account-1" }), expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("appends in the existing debt direction and merges the activity timeline", async () => {
@@ -383,7 +383,7 @@ describe("DebtWorkspace", () => {
       effectiveOn: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       note: "又借了一笔",
       accountId: "account-1",
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
     expect(await screen.findByText("往来记录")).toBeInTheDocument()
     expect(await screen.findByText("追加借出 ¥250.00")).toBeInTheDocument()
     expect(screen.getByText("还款 ¥200.00")).toBeInTheDocument()
@@ -430,7 +430,7 @@ describe("DebtWorkspace", () => {
       effectiveOn: "2026-08-04",
       note: "修正追加",
       accountId: undefined,
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("edits an active repayment record but not reversed history", async () => {
@@ -458,7 +458,7 @@ describe("DebtWorkspace", () => {
       effectiveOn: "2026-08-03",
       note: "修正还款",
       accountId: "account-1",
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
 
   })
 

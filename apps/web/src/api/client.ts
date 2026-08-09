@@ -50,7 +50,26 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return body as T
 }
 
-const idempotencyKey = () => crypto.randomUUID()
+/**
+ * 写请求的幂等键。
+ *
+ * 服务端靠它认出重复提交（`replay_idempotency`）：同一把键来两次，第二次直接返回
+ * 第一次的结果，不会重复记账。所以键必须绑定「这一次用户意图」，而不是「这一次
+ * 网络请求」——否则以下场景会记两笔：
+ *
+ *     用户点保存 ──▶ 服务端写入成功 ──▶ 响应在回程丢了
+ *                                          │
+ *     前端显示失败 ◀────────────────────────┘
+ *     用户再点一次 ──▶ 新键 ──▶ 服务端认不出 ──▶ 第二笔
+ *
+ * 调用方（见 useIdempotentMutation）在整个重试过程中传同一个 key；不传则退化为
+ * 每次现算，只对「确定不会重试」的调用安全。
+ */
+export type WriteOptions = { idempotencyKey?: string }
+
+const writeHeaders = (options?: WriteOptions) => ({
+  "Idempotency-Key": options?.idempotencyKey ?? crypto.randomUUID(),
+})
 
 export const api = {
   register: (input: { email: string; password: string; timezone: string }) =>
@@ -71,28 +90,28 @@ export const api = {
       body: JSON.stringify({ token, newPassword }),
     }),
   ledgerAccounts: () => request<LedgerAccount[]>("/ledger-accounts"),
-  createLedgerAccount: (input: CreateLedgerAccountInput) =>
+  createLedgerAccount: (input: CreateLedgerAccountInput, options?: WriteOptions) =>
     request<LedgerAccount>("/ledger-accounts", {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  updateLedgerAccount: (id: string, input: UpdateLedgerAccountInput) =>
+  updateLedgerAccount: (id: string, input: UpdateLedgerAccountInput, options?: WriteOptions) =>
     request<LedgerAccount>(`/ledger-accounts/${id}`, {
       method: "PATCH",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  archiveLedgerAccount: (id: string, version: number) =>
+  archiveLedgerAccount: (id: string, version: number, options?: WriteOptions) =>
     request<LedgerAccount>(`/ledger-accounts/${id}/archive`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify({ version }),
     }),
-  restoreLedgerAccount: (id: string, version: number) =>
+  restoreLedgerAccount: (id: string, version: number, options?: WriteOptions) =>
     request<LedgerAccount>(`/ledger-accounts/${id}/restore`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify({ version }),
     }),
   summary: () => request<Summary>("/dashboard/summary"),
@@ -104,64 +123,64 @@ export const api = {
     return request<DebtList>(`/debts?${query}`)
   },
   debt: (id: string) => request<Debt>(`/debts/${id}`),
-  createDebt: (input: CreateDebtInput) =>
+  createDebt: (input: CreateDebtInput, options?: WriteOptions) =>
     request<Debt>("/debts", {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  updateDebt: (id: string, input: UpdateDebtInput) =>
+  updateDebt: (id: string, input: UpdateDebtInput, options?: WriteOptions) =>
     request<Debt>(`/debts/${id}`, {
       method: "PATCH",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  archiveDebt: (id: string, version: number) =>
+  archiveDebt: (id: string, version: number, options?: WriteOptions) =>
     request<Debt>(`/debts/${id}/archive`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify({ version }),
     }),
-  restoreDebt: (id: string, version: number) =>
+  restoreDebt: (id: string, version: number, options?: WriteOptions) =>
     request<Debt>(`/debts/${id}/restore`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify({ version }),
     }),
-  deleteDebt: (id: string, version: number) =>
+  deleteDebt: (id: string, version: number, options?: WriteOptions) =>
     request<void>(`/debts/${id}`, {
       method: "DELETE",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify({ version }),
     }),
-  createRepayment: (id: string, input: CreateRepaymentInput) =>
+  createRepayment: (id: string, input: CreateRepaymentInput, options?: WriteOptions) =>
     request<Debt>(`/debts/${id}/repayments`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  createDebtAddition: (id: string, input: CreateDebtAdditionInput) =>
+  createDebtAddition: (id: string, input: CreateDebtAdditionInput, options?: WriteOptions) =>
     request<Debt>(`/debts/${id}/additions`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  updateDebtAddition: (id: string, input: UpdateDebtAdditionInput) =>
+  updateDebtAddition: (id: string, input: UpdateDebtAdditionInput, options?: WriteOptions) =>
     request<Debt>(`/debt-additions/${id}`, {
       method: "PATCH",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  updateRepayment: (id: string, input: UpdateRepaymentInput) =>
+  updateRepayment: (id: string, input: UpdateRepaymentInput, options?: WriteOptions) =>
     request<Debt>(`/repayments/${id}`, {
       method: "PATCH",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  reverseRepayment: (id: string, input: ReverseRepaymentInput) =>
+  reverseRepayment: (id: string, input: ReverseRepaymentInput, options?: WriteOptions) =>
     request<Debt>(`/repayments/${id}/reversals`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
   counterparties: () => request<Counterparty[]>("/counterparties"),
@@ -172,28 +191,28 @@ export const api = {
     })
     return request<TransactionList>(`/transactions?${query}`)
   },
-  createTransaction: (input: CreateTransactionInput) =>
+  createTransaction: (input: CreateTransactionInput, options?: WriteOptions) =>
     request<LedgerTransaction>("/transactions", {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  updateTransaction: (id: string, input: UpdateTransactionInput) =>
+  updateTransaction: (id: string, input: UpdateTransactionInput, options?: WriteOptions) =>
     request<LedgerTransaction>(`/transactions/${id}`, {
       method: "PATCH",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify(input),
     }),
-  deleteTransaction: (id: string, version: number) =>
+  deleteTransaction: (id: string, version: number, options?: WriteOptions) =>
     request<void>(`/transactions/${id}`, {
       method: "DELETE",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify({ version }),
     }),
-  restoreTransaction: (id: string, version: number) =>
+  restoreTransaction: (id: string, version: number, options?: WriteOptions) =>
     request<LedgerTransaction>(`/transactions/${id}/restore`, {
       method: "POST",
-      headers: { "Idempotency-Key": idempotencyKey() },
+      headers: writeHeaders(options),
       body: JSON.stringify({ version }),
     }),
   transactionSummary: (month: string) =>

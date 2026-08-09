@@ -7,7 +7,6 @@ import { api } from "./api/client"
 import { BrandMark } from "./components/brand-mark"
 import { Button, useToast } from "./components/ui"
 import { AccountWorkspace } from "./features/account-workspace"
-import { DesktopBackupFooter } from "./features/desktop-backup-footer"
 import { DebtDetailPage, DebtWorkspace } from "./features/debt-workspace"
 import { TransactionWorkspace } from "./features/transaction-workspace"
 import {
@@ -39,6 +38,7 @@ export function AppShell({ email }: { email: string }) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const [collapsed, setCollapsed] = useState(savedSidebarState)
+  const [commandPressed, setCommandPressed] = useState(false)
   useEffect(() => {
     try {
       window.localStorage?.setItem("zhiyu-sidebar-collapsed", String(collapsed))
@@ -48,22 +48,43 @@ export function AppShell({ email }: { email: string }) {
   }, [collapsed])
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Meta") setCommandPressed(true)
+      const target = event.target
+      if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return
+      const destination = event.metaKey ? {
+        "1": "/app/debts",
+        "2": "/app/transactions",
+        "3": "/app/accounts",
+      }[event.key] : undefined
+      if (destination) {
+        event.preventDefault()
+        navigate(destination)
+        return
+      }
       if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== "b") return
-      const target = event.target as HTMLElement | null
-      if (target?.closest("input, textarea, select, [contenteditable='true']")) return
       event.preventDefault()
       setCollapsed((value) => !value)
     }
+    const onKeyUp = (event: KeyboardEvent) => {
+      if (event.key === "Meta") setCommandPressed(false)
+    }
+    const onBlur = () => setCommandPressed(false)
     window.addEventListener("keydown", onKeyDown)
-    return () => window.removeEventListener("keydown", onKeyDown)
-  }, [])
+    window.addEventListener("keyup", onKeyUp)
+    window.addEventListener("blur", onBlur)
+    return () => {
+      window.removeEventListener("keydown", onKeyDown)
+      window.removeEventListener("keyup", onKeyUp)
+      window.removeEventListener("blur", onBlur)
+    }
+  }, [navigate])
   const logout = useMutation({
     mutationFn: api.logout,
     onSuccess: () => { queryClient.clear(); navigate("/login", { replace: true }) },
     onError: (error) => toast({ title: "退出失败", description: error.message, type: "error" }),
   })
   return (
-    <div className="app-shell" data-sidebar={collapsed ? "collapsed" : "expanded"}>
+    <div className="app-shell" data-command-pressed={commandPressed || undefined} data-sidebar={collapsed ? "collapsed" : "expanded"}>
       <aside className="sidebar" id="app-sidebar">
         <div className="sidebar-header">
           <div className="brand-lockup"><span className="brand-mark"><BrandMark /></span><span className="brand-copy"><strong>知余</strong><small>个人账本</small></span></div>
@@ -71,39 +92,44 @@ export function AppShell({ email }: { email: string }) {
             aria-controls="app-sidebar"
             aria-expanded={!collapsed}
             aria-label={collapsed ? "展开侧边栏" : "折叠侧边栏"}
+            className="sidebar-toggle"
             onClick={() => setCollapsed((value) => !value)}
             size="icon-sm"
             title={collapsed ? "展开侧边栏（⌘B）" : "折叠侧边栏（⌘B）"}
             variant="ghost"
-          ><PanelLeftIcon /></Button>
+          >
+            <span className="brand-mark sidebar-toggle-brand"><BrandMark /></span>
+            <PanelLeftIcon aria-hidden="true" className="sidebar-toggle-icon" />
+          </Button>
         </div>
         <div className="nav-group">
           <span className="nav-group-label">个人账本</span>
           <nav>
-            <NavLink aria-label="个人账本：债务管理" to="/app/debts">
+            <NavLink aria-keyshortcuts="Meta+1" aria-label="个人账本：债务管理" to="/app/debts">
               <HandCoinsIcon aria-hidden="true" />
               <span className="nav-copy">债务管理</span>
+              <kbd aria-hidden="true" className="nav-shortcut">⌘1</kbd>
               <span aria-hidden="true" className="nav-tooltip"><strong>债务管理</strong><small>个人账本</small></span>
             </NavLink>
-            <NavLink aria-label="个人账本：记账" to="/app/transactions">
+            <NavLink aria-keyshortcuts="Meta+2" aria-label="个人账本：记账" to="/app/transactions">
               <NotebookPenIcon aria-hidden="true" />
               <span className="nav-copy">记账</span>
+              <kbd aria-hidden="true" className="nav-shortcut">⌘2</kbd>
               <span aria-hidden="true" className="nav-tooltip"><strong>记账</strong><small>个人账本</small></span>
             </NavLink>
-            <NavLink aria-label="个人账本：账户管理" to="/app/accounts">
+            <NavLink aria-keyshortcuts="Meta+3" aria-label="个人账本：账户管理" to="/app/accounts">
               <WalletCardsIcon aria-hidden="true" />
               <span className="nav-copy">账户管理</span>
+              <kbd aria-hidden="true" className="nav-shortcut">⌘3</kbd>
               <span aria-hidden="true" className="nav-tooltip"><strong>账户管理</strong><small>个人账本</small></span>
             </NavLink>
           </nav>
         </div>
-        {email === "local@zhiyu.desktop"
-          ? <DesktopBackupFooter />
-          : <div className="account-block">
-              <span className="account-avatar"><CircleUserRoundIcon aria-hidden="true" /></span>
-              <div><strong>{email}</strong><span>个人账户</span></div>
-              <Button aria-label="退出登录" disabled={logout.isPending} onClick={() => logout.mutate()} size="icon" variant="ghost"><LogOutIcon /></Button>
-            </div>}
+        <div className="account-block">
+          <span className="account-avatar"><CircleUserRoundIcon aria-hidden="true" /></span>
+          <div><strong>{email}</strong><span>个人账户</span></div>
+          <Button aria-label="退出登录" disabled={logout.isPending} onClick={() => logout.mutate()} size="icon" variant="ghost"><LogOutIcon /></Button>
+        </div>
       </aside>
       <section className="app-frame">
         <header className="topbar">

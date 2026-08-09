@@ -173,7 +173,7 @@ describe("TransactionWorkspace", () => {
       category: "零食",
       accountId: null,
       note: "",
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
     await waitFor(() => expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["ledger-accounts"] }))
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: ["transaction-summary"] })
     expect(await screen.findByText("已记一笔")).toBeInTheDocument()
@@ -201,7 +201,7 @@ describe("TransactionWorkspace", () => {
       category: "餐饮",
       accountId: "account-1",
       note: "午饭",
-    }))
+    }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
     expect(await screen.findByText("记账已更新")).toBeInTheDocument()
   })
 
@@ -215,7 +215,7 @@ describe("TransactionWorkspace", () => {
     expect(within(dialog).getByText(/删除后不再计入统计与账户余额/)).toBeInTheDocument()
     vi.mocked(api.deleteTransaction).mockResolvedValue(undefined)
     await user.click(within(dialog).getByRole("button", { name: "确认删除" }))
-    await waitFor(() => expect(api.deleteTransaction).toHaveBeenCalledWith("tx-2", 3))
+    await waitFor(() => expect(api.deleteTransaction).toHaveBeenCalledWith("tx-2", 3, expect.objectContaining({ idempotencyKey: expect.any(String) })))
     expect(await screen.findByText("记账已删除")).toBeInTheDocument()
   })
 
@@ -230,7 +230,7 @@ describe("TransactionWorkspace", () => {
     await user.click(within(await screen.findByRole("alertdialog")).getByRole("button", { name: "确认删除" }))
     await user.click(await screen.findByRole("button", { name: "撤销" }))
     // Deleting bumps the version from 3 to 4, so the restore must target 4.
-    await waitFor(() => expect(api.restoreTransaction).toHaveBeenCalledWith("tx-2", 4))
+    await waitFor(() => expect(api.restoreTransaction).toHaveBeenCalledWith("tx-2", 4, expect.objectContaining({ idempotencyKey: expect.any(String) })))
     expect(await screen.findByText("已撤销删除")).toBeInTheDocument()
   })
 
