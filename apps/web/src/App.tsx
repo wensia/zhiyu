@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
-import { ArrowLeftIcon, CircleUserRoundIcon, HandCoinsIcon, LogOutIcon, NotebookPenIcon, PanelLeftIcon, WalletCardsIcon } from "lucide-react"
+import { ArrowLeftIcon, LogOutIcon, PanelLeftIcon } from "lucide-react"
 import { useEffect, useState } from "react"
 import { Navigate, NavLink, Outlet, Route, Routes, useMatch, useNavigate } from "react-router-dom"
 
@@ -9,6 +9,7 @@ import { Button, useToast } from "./components/ui"
 import { AccountWorkspace } from "./features/account-workspace"
 import { DebtDetailPage, DebtWorkspace } from "./features/debt-workspace"
 import { TransactionWorkspace } from "./features/transaction-workspace"
+import { navigationItems, navigationKey, navigationShortcut } from "./navigation"
 import {
   ForgotPasswordPage,
   LoginPage,
@@ -25,14 +26,16 @@ function savedSidebarState() {
   }
 }
 
+const navigationGroups = Array.from(new Set(navigationItems.map((item) => item.group)))
+
 function ProtectedLayout() {
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false })
   if (me.isLoading) return <div className="app-loading"><span className="brand-mark"><BrandMark /></span><div className="spinner" /><p>正在打开知余…</p></div>
   if (me.isError) return <Navigate replace to="/login" />
-  return <AppShell email={me.data!.email} />
+  return <AppShell />
 }
 
-export function AppShell({ email }: { email: string }) {
+export function AppShell() {
   const navigate = useNavigate()
   const debtDetailRoute = useMatch("/app/debts/:id")
   const queryClient = useQueryClient()
@@ -51,11 +54,8 @@ export function AppShell({ email }: { email: string }) {
       if (event.key === "Meta") setCommandPressed(true)
       const target = event.target
       if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return
-      const destination = event.metaKey ? {
-        "1": "/app/debts",
-        "2": "/app/transactions",
-        "3": "/app/accounts",
-      }[event.key] : undefined
+      const shortcut = event.metaKey ? navigationKey(event) : undefined
+      const destination = shortcut ? navigationItems[Number(shortcut) - 1]?.path : undefined
       if (destination) {
         event.preventDefault()
         navigate(destination)
@@ -102,34 +102,41 @@ export function AppShell({ email }: { email: string }) {
             <PanelLeftIcon aria-hidden="true" className="sidebar-toggle-icon" />
           </Button>
         </div>
-        <div className="nav-group">
-          <span className="nav-group-label">个人账本</span>
-          <nav>
-            <NavLink aria-keyshortcuts="Meta+1" aria-label="个人账本：债务管理" to="/app/debts">
-              <HandCoinsIcon aria-hidden="true" />
-              <span className="nav-copy">债务管理</span>
-              <kbd aria-hidden="true" className="nav-shortcut">⌘1</kbd>
-              <span aria-hidden="true" className="nav-tooltip"><strong>债务管理</strong><small>个人账本</small></span>
-            </NavLink>
-            <NavLink aria-keyshortcuts="Meta+2" aria-label="个人账本：记账" to="/app/transactions">
-              <NotebookPenIcon aria-hidden="true" />
-              <span className="nav-copy">记账</span>
-              <kbd aria-hidden="true" className="nav-shortcut">⌘2</kbd>
-              <span aria-hidden="true" className="nav-tooltip"><strong>记账</strong><small>个人账本</small></span>
-            </NavLink>
-            <NavLink aria-keyshortcuts="Meta+3" aria-label="个人账本：账户管理" to="/app/accounts">
-              <WalletCardsIcon aria-hidden="true" />
-              <span className="nav-copy">账户管理</span>
-              <kbd aria-hidden="true" className="nav-shortcut">⌘3</kbd>
-              <span aria-hidden="true" className="nav-tooltip"><strong>账户管理</strong><small>个人账本</small></span>
-            </NavLink>
-          </nav>
-        </div>
-        <div className="account-block">
-          <span className="account-avatar"><CircleUserRoundIcon aria-hidden="true" /></span>
-          <div><strong>{email}</strong><span>个人账户</span></div>
-          <Button aria-label="退出登录" disabled={logout.isPending} onClick={() => logout.mutate()} size="icon" variant="ghost"><LogOutIcon /></Button>
-        </div>
+        {navigationGroups.map((group) => (
+          <div className="nav-group" key={group}>
+            <span className="nav-group-label">{group}</span>
+            <nav>
+              {navigationItems.map((item, index) => {
+                if (item.group !== group) return null
+                const shortcut = navigationShortcut(index)
+                const Icon = item.icon
+                return (
+                  <NavLink
+                    aria-keyshortcuts={shortcut ? `Meta+${shortcut}` : undefined}
+                    aria-label={`${item.group}：${item.label}`}
+                    key={item.path}
+                    to={item.path}
+                  >
+                    <Icon aria-hidden="true" />
+                    <span className="nav-copy">{item.label}</span>
+                    {shortcut ? <kbd aria-hidden="true" className="nav-shortcut">⌘{shortcut}</kbd> : null}
+                    <span aria-hidden="true" className="nav-tooltip"><strong>{item.label}</strong><small>{item.group}</small></span>
+                  </NavLink>
+                )
+              })}
+            </nav>
+          </div>
+        ))}
+        <button
+          aria-label="退出登录"
+          className="sidebar-logout"
+          disabled={logout.isPending}
+          onClick={() => logout.mutate()}
+          type="button"
+        >
+          <LogOutIcon aria-hidden="true" />
+          <span className="nav-copy">退出登录</span>
+        </button>
       </aside>
       <section className="app-frame">
         <header className="topbar">
@@ -144,9 +151,10 @@ export function AppShell({ email }: { email: string }) {
         <div className="app-main"><Outlet /></div>
       </section>
       <nav className="mobile-nav">
-        <NavLink to="/app/debts"><HandCoinsIcon /><span>债务</span></NavLink>
-        <NavLink to="/app/transactions"><NotebookPenIcon /><span>记账</span></NavLink>
-        <NavLink to="/app/accounts"><WalletCardsIcon /><span>账户</span></NavLink>
+        {navigationItems.map((item) => {
+          const Icon = item.icon
+          return <NavLink key={item.path} to={item.path}><Icon /><span>{item.mobileLabel}</span></NavLink>
+        })}
         <button disabled={logout.isPending} onClick={() => logout.mutate()} type="button"><LogOutIcon /><span>退出</span></button>
       </nav>
     </div>

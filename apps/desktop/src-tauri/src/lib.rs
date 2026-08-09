@@ -26,6 +26,7 @@ const WINDOW_CHROME_SCRIPT: &str = r#"(function () {
 fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("settings") {
         window.show()?;
+        window.unminimize()?;
         window.set_focus()?;
         return Ok(());
     }
@@ -60,8 +61,9 @@ pub fn run() {
             backup_client.spawn_scheduler();
             app.manage(backup_client);
 
-            let settings_item =
-                MenuItemBuilder::with_id(SETTINGS_MENU_ID, "备份设置…").build(app)?;
+            let settings_item = MenuItemBuilder::with_id(SETTINGS_MENU_ID, "备份设置…")
+                .accelerator("CmdOrCtrl+Comma")
+                .build(app)?;
             let app_menu = SubmenuBuilder::new(app, "知余")
                 .about(None)
                 .separator()

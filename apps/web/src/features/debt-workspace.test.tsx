@@ -94,7 +94,7 @@ function renderWorkspace(initialEntries = ["/app/debts"]) {
 
 function renderWorkspaceWithShell(initialEntries = ["/app/debts"]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><AppToastProvider><MemoryRouter initialEntries={initialEntries}><LocationProbe /><Routes><Route path="/app" element={<AppShell email="test@example.com" />}><Route path="debts" element={<DebtWorkspace />} /><Route path="debts/:id" element={<DebtDetailPage />} /></Route></Routes></MemoryRouter></AppToastProvider></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><AppToastProvider><MemoryRouter initialEntries={initialEntries}><LocationProbe /><Routes><Route path="/app" element={<AppShell />}><Route path="debts" element={<DebtWorkspace />} /><Route path="debts/:id" element={<DebtDetailPage />} /></Route></Routes></MemoryRouter></AppToastProvider></QueryClientProvider>)
 }
 
 describe("DebtWorkspace", () => {

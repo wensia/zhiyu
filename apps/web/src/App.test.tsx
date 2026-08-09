@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it } from "vitest"
 
 import { AppShell } from "./App"
 import { AppToastProvider } from "./components/ui"
+import { navigationItems, navigationShortcut } from "./navigation"
 
 function LocationProbe() {
   const location = useLocation()
@@ -22,7 +23,7 @@ function renderShell() {
       <AppToastProvider>
         <MemoryRouter initialEntries={["/app/debts"]}>
           <Routes>
-            <Route path="/app" element={<AppShell email="test@example.com" />}>
+            <Route path="/app" element={<AppShell />}>
               <Route path="debts" element={<Page />} />
               <Route path="transactions" element={<Page />} />
               <Route path="accounts" element={<Page />} />
@@ -59,7 +60,7 @@ describe("AppShell navigation shortcuts", () => {
   it("navigates with Command plus 1, 2, or 3", () => {
     renderShell()
 
-    fireEvent.keyDown(window, { key: "2", metaKey: true })
+    fireEvent.keyDown(window, { code: "Digit2", key: "¡", metaKey: true })
     expect(screen.getByLabelText("当前位置")).toHaveTextContent("/app/transactions")
     fireEvent.keyDown(window, { key: "3", metaKey: true })
     expect(screen.getByLabelText("当前位置")).toHaveTextContent("/app/accounts")
@@ -74,6 +75,21 @@ describe("AppShell navigation shortcuts", () => {
     input.focus()
     fireEvent.keyDown(input, { key: "2", metaKey: true })
     expect(screen.getByLabelText("当前位置")).toHaveTextContent("/app/debts")
+  })
+
+  it("assigns the next shortcut when a navigation item is appended", () => {
+    const itemsWithNewPage = [
+      ...navigationItems,
+      { ...navigationItems[0], path: "/app/reports", label: "报表", mobileLabel: "报表" },
+    ]
+
+    expect(itemsWithNewPage.map((_, index) => navigationShortcut(index))).toEqual(["1", "2", "3", "4"])
+  })
+
+  it("does not assign shortcuts after Command plus 9", () => {
+    expect(Array.from({ length: 10 }, (_, index) => navigationShortcut(index))).toEqual([
+      "1", "2", "3", "4", "5", "6", "7", "8", "9", undefined,
+    ])
   })
 })
 
