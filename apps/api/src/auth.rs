@@ -529,6 +529,39 @@ pub async fn issue_api_key(state: &AppState, email: &str) -> Result<String, ApiE
     Ok(token)
 }
 
+/// 为已有用户设置新密码，并撤销该用户的所有网页登录会话。
+///
+/// API 密钥属于机器凭证，不随人的密码变更撤销。
+pub async fn set_password(state: &AppState, email: &str, password: String) -> Result<(), ApiError> {
+    let email = validate_email(email)?;
+    validate_password(&password)?;
+    let password_hash = hash_password(password).await?;
+    let conn = state.connection().await?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await?;
+    let mut rows = tx
+        .query("SELECT id FROM users WHERE email = ?1", [email.clone()])
+        .await?;
+    let user_id = rows
+        .next()
+        .await?
+        .map(|row| row.get::<String>(0))
+        .transpose()?
+        .ok_or_else(|| ApiError::not_found(format!("用户不存在：{email}")))?;
+    drop(rows);
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "UPDATE users SET password_hash = ?1, updated_at = ?2 WHERE id = ?3",
+        params![password_hash, now, user_id.clone()],
+    )
+    .await?;
+    tx.execute("DELETE FROM sessions WHERE user_id = ?1", [user_id])
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
 async fn hash_password(password: String) -> Result<String, ApiError> {
     tokio::task::spawn_blocking(move || {
         let salt = SaltString::generate(&mut OsRng);

@@ -16,6 +16,10 @@ path = "src/main.rs"
 name = "zhiyu-api-key"
 path = "src/bin/api_key.rs"
 
+[[bin]]
+name = "zhiyu-passwd"
+path = "src/bin/passwd.rs"
+
 [dependencies]
 anyhow.workspace = true
 argon2.workspace = true
@@ -33,12 +37,14 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
+tokio-util.workspace = true
 tower.workspace = true
 tower-http.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 utoipa.workspace = true
 uuid.workspace = true
+zhiyu-backup-policy.workspace = true
 
 [dev-dependencies]
 tempfile = "3.23"

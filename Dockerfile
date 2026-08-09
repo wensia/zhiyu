@@ -10,6 +10,7 @@ RUN printf '%s\n' \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY apps/api ./apps/api
+COPY crates/backup-policy ./crates/backup-policy
 # workspace 有 Tauri 成员，但桌面壳不进服务端镜像。cargo 加载 workspace 时会要求
 # 每个 member 的 manifest 存在，缺了就整体失败，所以给它一个 stub：真 manifest
 # 保证 --locked 校验通过，空源文件满足路径检查。它不参与 -p zhiyu-api 的编译。
@@ -19,9 +20,10 @@ RUN mkdir -p apps/desktop/src-tauri/src \
     && : > apps/desktop/src-tauri/src/main.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
-    cargo build --release --locked -p zhiyu-api --bin zhiyu-api --bin zhiyu-api-key \
+    cargo build --release --locked -p zhiyu-api --bin zhiyu-api --bin zhiyu-api-key --bin zhiyu-passwd \
     && cp /src/target/release/zhiyu-api /tmp/zhiyu-api \
-    && cp /src/target/release/zhiyu-api-key /tmp/zhiyu-api-key
+    && cp /src/target/release/zhiyu-api-key /tmp/zhiyu-api-key \
+    && cp /src/target/release/zhiyu-passwd /tmp/zhiyu-passwd
 
 FROM node:22-bookworm-slim AS web-builder
 
@@ -49,6 +51,7 @@ RUN sed -i \
 WORKDIR /app
 COPY --from=api-builder /tmp/zhiyu-api /usr/local/bin/zhiyu-api
 COPY --from=api-builder /tmp/zhiyu-api-key /usr/local/bin/zhiyu-api-key
+COPY --from=api-builder /tmp/zhiyu-passwd /usr/local/bin/zhiyu-passwd
 COPY --from=web-builder /src/apps/web/dist ./web
 
 RUN mkdir -p /data/dev-mail \

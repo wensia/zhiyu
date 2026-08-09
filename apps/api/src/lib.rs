@@ -42,6 +42,7 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub email: Arc<dyn EmailSender>,
     pub rate_limiter: RateLimiter,
+    pub backup_status: backup::BackupStatusStore,
 }
 
 impl AppState {
@@ -85,7 +86,8 @@ impl Modify for SecurityAddon {
         accounts::archive_ledger_account, accounts::restore_ledger_account,
         transactions::list_transactions, transactions::create_transaction, transactions::update_transaction,
         transactions::delete_transaction, transactions::restore_transaction, transactions::transaction_summary,
-        transactions::list_transaction_categories
+        transactions::list_transaction_categories,
+        backup::list_backups, backup::backup_status, backup::download_backup
     ),
     components(schemas(
         domain::UserView, domain::RegisterRequest, domain::LoginRequest, domain::EmailRequest,
@@ -101,7 +103,8 @@ impl Modify for SecurityAddon {
         domain::DashboardSummary, error::ErrorBody,
         domain::TransactionKind, domain::LedgerTransactionView, domain::TransactionListResponse,
         domain::CreateTransactionRequest, domain::UpdateTransactionRequest,
-        domain::TransactionDaySummary, domain::TransactionCategorySummary, domain::TransactionMonthSummary
+        domain::TransactionDaySummary, domain::TransactionCategorySummary, domain::TransactionMonthSummary,
+        backup::BackupListItem, backup::BackupRuntimeStatus
     )),
     modifiers(&SecurityAddon),
     tags((name = "知余", description = "个人债务管理 API"))
@@ -173,7 +176,10 @@ pub fn app(state: AppState) -> Router {
         .route(
             "/transactions/{id}/restore",
             post(transactions::restore_transaction),
-        );
+        )
+        .route("/backups", get(backup::list_backups))
+        .route("/backups/status", get(backup::backup_status))
+        .route("/backups/{id}", get(backup::download_backup));
 
     let index = state.config.web_dist_dir.join("index.html");
     let static_files =

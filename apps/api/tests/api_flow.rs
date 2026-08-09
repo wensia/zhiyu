@@ -10,6 +10,7 @@ use axum::{
     http::{HeaderMap, Method, Request, StatusCode, header},
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -50,6 +51,7 @@ impl TestApp {
             email: Arc::new(DevFileEmailSender::new(config.dev_mail_dir.clone())),
             config: Arc::new(config),
             rate_limiter: RateLimiter::default(),
+            backup_status: Default::default(),
         };
         Self {
             router: app(state.clone()),
@@ -292,6 +294,233 @@ async fn api_key_write_does_not_require_csrf_origin() {
     )
     .await;
     assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn setting_password_revokes_old_sessions_and_allows_new_login() {
+    let test = TestApp::new().await;
+    test.insert_verified_user("passwd@zhiyu.local", "a-very-secure-password")
+        .await;
+    let (status, headers, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some(json!({ "email": "passwd@zhiyu.local", "password": "a-very-secure-password" })),
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let old_cookie = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    auth::set_password(
+        &test.state,
+        "passwd@zhiyu.local",
+        "the-new-secure-password".into(),
+    )
+    .await
+    .unwrap();
+
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        Some(&old_cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some(json!({ "email": "passwd@zhiyu.local", "password": "the-new-secure-password" })),
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn setting_password_rejects_unknown_user_without_creating_it() {
+    let test = TestApp::new().await;
+    let error = auth::set_password(
+        &test.state,
+        "missing@zhiyu.local",
+        "a-strong-new-password".into(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, StatusCode::NOT_FOUND);
+    assert_eq!(error.message, "用户不存在：missing@zhiyu.local");
+
+    let mut rows = test
+        .state
+        .connection()
+        .await
+        .unwrap()
+        .query("SELECT COUNT(*) FROM users", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn setting_password_rejects_weak_password_and_keeps_api_keys() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "credentials@zhiyu.local")
+        .await
+        .unwrap();
+    let error = auth::set_password(&test.state, "credentials@zhiyu.local", "short".into())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    auth::set_password(
+        &test.state,
+        "credentials@zhiyu.local",
+        "a-strong-human-password".into(),
+    )
+    .await
+    .unwrap();
+    let (status, _, _) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn backup_endpoints_require_authentication() {
+    let test = TestApp::new().await;
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/backups",
+        None,
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/backups/2026-08-10T02:03:04Z",
+        None,
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn api_key_lists_and_downloads_verified_backup() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "backup-reader@zhiyu.local")
+        .await
+        .unwrap();
+    let backup_dir = zhiyu_api::backup::backup_directory(&test.state.config).unwrap();
+    let snapshot = zhiyu_api::backup::create_managed_snapshot(
+        &test.state.db,
+        &backup_dir,
+        "2026-08-10T02:03:04Z".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let (status, _, list) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/backups",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["id"], "2026-08-10T02:03:04Z");
+    assert_eq!(list[0]["created_at"], "2026-08-10T02:03:04Z");
+    assert_eq!(list[0]["size"], snapshot.manifest.database_size_bytes);
+    assert_eq!(list[0]["sha256"], snapshot.manifest.database_sha256);
+    assert_eq!(list[0]["schema_version"], 10);
+
+    let response = test
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/backups/2026-08-10T02:03:04Z")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/octet-stream"
+    );
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bytes.len() as u64, snapshot.manifest.database_size_bytes);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        snapshot.manifest.database_sha256
+    );
+}
+
+#[tokio::test]
+async fn backup_download_rejects_forged_ids() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "backup-id@zhiyu.local")
+        .await
+        .unwrap();
+    let overlong = "a".repeat(500);
+    for uri in [
+        "/api/v1/backups/%2E%2E%2Fsecret".to_owned(),
+        "/api/v1/backups/%2Fetc%2Fpasswd".to_owned(),
+        format!("/api/v1/backups/{overlong}"),
+    ] {
+        let (status, _, _) = send_with_authorization(
+            &test.router,
+            Method::GET,
+            &uri,
+            None,
+            &format!("Bearer {key}"),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(status, StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND),
+            "伪造 ID 未被拒绝：{uri} -> {status}"
+        );
+    }
 }
 
 #[tokio::test]

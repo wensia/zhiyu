@@ -1,22 +1,43 @@
 //! 数据库快照：备份链路里与「投递到哪」无关的那一半。
 //!
-//! 投递由服务端的 scripts/server-backup.sh 接手（restic → 对象存储）。本模块只负责
-//! 产出一份**可信**的快照：一致快照、两道校验、内容哈希、先写临时文件。
-//! 投递方式换成别的也不影响这里。
+//! API 进程在这里产出并保留一份**可信**的快照：一致快照、两道校验、内容哈希、
+//! 先写临时文件再原子发布。桌面端只下载已发布快照，不接触在线数据库。
 //!
 //! 为什么是整库快照而不是按表导出文本：恢复目标是「一个满足全部约束、能继续记账
 //! 的数据库」，不是「一批人类可读的记录」。逻辑导出要自行处理 NULL/BLOB/排序/外键
 //! 装载顺序/视图/迁移版本，任何一处遗漏都可能让恢复出来的账本在语法上完好、在业务
 //! 上错乱（悬空的撤销链、丢失的幂等记录）。原生快照恢复时不重新解释任何业务数据。
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration as StdDuration,
+};
 
-use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use anyhow::{Context, Result, anyhow, bail};
+use axum::{
+    Json,
+    body::Body,
+    extract::{Path as AxumPath, State},
+    http::{StatusCode, header},
+    response::Response,
+};
+use chrono::{DateTime, SecondsFormat, Utc};
 use libsql::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::RwLock;
+use tokio_util::io::ReaderStream;
+use utoipa::ToSchema;
 use uuid::Uuid;
+use zhiyu_backup_policy::{Snapshot as RetentionSnapshot, plan_retention};
+
+use crate::{AppState, auth::AuthUser, config::Config, error::ApiError};
+
+pub const BACKUP_RETENTION_DAYS: i64 = 30;
+pub const SNAPSHOT_FILE_PREFIX: &str = "zhiyu-";
+pub const SNAPSHOT_FILE_SUFFIX: &str = ".db";
+pub const MANIFEST_FILE_SUFFIX: &str = ".manifest.json";
 
 /// 快照旁边那份 manifest 的格式版本。恢复时先看它，不认识就直接拒绝。
 pub const BACKUP_FORMAT_VERSION: u32 = 1;
@@ -37,6 +58,367 @@ pub struct Manifest {
     pub source_journal_mode: String,
     pub integrity_check: String,
     pub foreign_key_violation_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedSnapshot {
+    pub id: String,
+    pub created_at: DateTime<Utc>,
+    pub database_path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub manifest: Manifest,
+}
+
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRuntimeStatus {
+    pub running: bool,
+    pub last_attempt_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub latest_snapshot_id: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BackupStatusStore(Arc<RwLock<BackupRuntimeStatus>>);
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct BackupListItem {
+    pub id: String,
+    pub created_at: String,
+    pub size: u64,
+    pub sha256: String,
+    pub schema_version: i64,
+}
+
+impl BackupStatusStore {
+    pub async fn get(&self) -> BackupRuntimeStatus {
+        self.0.read().await.clone()
+    }
+
+    async fn started(&self, now: DateTime<Utc>) {
+        let mut status = self.0.write().await;
+        status.running = true;
+        status.last_attempt_at = Some(now.to_rfc3339());
+    }
+
+    async fn succeeded(&self, now: DateTime<Utc>, latest_snapshot_id: Option<String>) {
+        let mut status = self.0.write().await;
+        status.running = false;
+        status.last_success_at = Some(now.to_rfc3339());
+        status.latest_snapshot_id = latest_snapshot_id;
+        status.last_error = None;
+    }
+
+    async fn failed(&self, error: &anyhow::Error) {
+        let mut status = self.0.write().await;
+        status.running = false;
+        status.last_error = Some(format!("{error:#}"));
+    }
+}
+
+pub fn backup_directory(config: &Config) -> Result<PathBuf> {
+    if config.database_url.starts_with("libsql://") || config.database_url.starts_with("https://") {
+        bail!("远程 DATABASE_URL 无法生成本地 SQLite 快照");
+    }
+    let database_path = config
+        .database_url
+        .strip_prefix("file:")
+        .unwrap_or(&config.database_url);
+    if database_path == ":memory:" {
+        bail!("内存数据库没有可用于备份的数据目录");
+    }
+    let parent = Path::new(database_path)
+        .parent()
+        .context("DATABASE_URL 没有数据目录")?;
+    Ok(parent.join("backups"))
+}
+
+pub fn snapshot_id_at(now: DateTime<Utc>) -> String {
+    now.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+pub fn parse_snapshot_id(id: &str) -> Result<DateTime<Utc>> {
+    if id.len() != 20 {
+        bail!("备份 ID 格式不正确");
+    }
+    let parsed = DateTime::parse_from_rfc3339(id)
+        .context("备份 ID 不是 RFC3339 时间戳")?
+        .with_timezone(&Utc);
+    if snapshot_id_at(parsed) != id {
+        bail!("备份 ID 不是规范 UTC 时间戳");
+    }
+    Ok(parsed)
+}
+
+pub async fn list_managed_snapshots(backup_dir: &Path) -> Result<Vec<ManagedSnapshot>> {
+    tokio::fs::create_dir_all(backup_dir)
+        .await
+        .with_context(|| format!("无法创建备份目录 {}", backup_dir.display()))?;
+    let mut entries = tokio::fs::read_dir(backup_dir)
+        .await
+        .with_context(|| format!("无法读取备份目录 {}", backup_dir.display()))?;
+    let mut snapshots = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let Some(id) = file_name
+            .strip_prefix(SNAPSHOT_FILE_PREFIX)
+            .and_then(|value| value.strip_suffix(MANIFEST_FILE_SUFFIX))
+        else {
+            continue;
+        };
+        let id_created_at =
+            parse_snapshot_id(id).with_context(|| format!("备份清单文件名不合法：{file_name}"))?;
+        let manifest_path = entry.path();
+        let manifest: Manifest = serde_json::from_slice(
+            &tokio::fs::read(&manifest_path)
+                .await
+                .with_context(|| format!("无法读取备份清单 {}", manifest_path.display()))?,
+        )
+        .with_context(|| format!("备份清单不是有效 JSON：{}", manifest_path.display()))?;
+        let created_at = DateTime::parse_from_rfc3339(&manifest.created_at_utc)
+            .context("备份清单 createdAtUtc 不是 RFC3339 时间戳")?
+            .with_timezone(&Utc);
+        if created_at != id_created_at {
+            bail!("备份清单时间与文件名不一致：{file_name}");
+        }
+        let database_path =
+            backup_dir.join(format!("{SNAPSHOT_FILE_PREFIX}{id}{SNAPSHOT_FILE_SUFFIX}"));
+        let actual_size = tokio::fs::metadata(&database_path)
+            .await
+            .with_context(|| format!("备份快照不存在：{}", database_path.display()))?
+            .len();
+        if actual_size != manifest.database_size_bytes {
+            bail!(
+                "备份快照长度不匹配：{}（清单 {}，实际 {}）",
+                database_path.display(),
+                manifest.database_size_bytes,
+                actual_size
+            );
+        }
+        snapshots.push(ManagedSnapshot {
+            id: id.to_owned(),
+            created_at,
+            database_path,
+            manifest_path,
+            manifest,
+        });
+    }
+    snapshots.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    Ok(snapshots)
+}
+
+async fn sync_file(path: &Path) -> Result<()> {
+    tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .await?
+        .sync_all()
+        .await?;
+    Ok(())
+}
+
+pub async fn create_managed_snapshot(
+    db: &Database,
+    backup_dir: &Path,
+    now: DateTime<Utc>,
+) -> Result<ManagedSnapshot> {
+    tokio::fs::create_dir_all(backup_dir).await?;
+    let id = snapshot_id_at(now);
+    let database_path =
+        backup_dir.join(format!("{SNAPSHOT_FILE_PREFIX}{id}{SNAPSHOT_FILE_SUFFIX}"));
+    let manifest_path =
+        backup_dir.join(format!("{SNAPSHOT_FILE_PREFIX}{id}{MANIFEST_FILE_SUFFIX}"));
+    if database_path.exists() || manifest_path.exists() {
+        bail!("同一秒的备份已经存在：{id}");
+    }
+
+    let staging_dir = backup_dir.join(".staging");
+    let (staged_database, mut manifest) =
+        create_snapshot(db, &staging_dir, env!("CARGO_PKG_VERSION")).await?;
+    manifest.created_at_utc = id.clone();
+    sync_file(&staged_database).await?;
+
+    let staged_manifest = staging_dir.join(format!("manifest-{}.partial", Uuid::now_v7()));
+    tokio::fs::write(&staged_manifest, serde_json::to_vec_pretty(&manifest)?).await?;
+    sync_file(&staged_manifest).await?;
+    tokio::fs::rename(&staged_database, &database_path)
+        .await
+        .context("无法原子发布备份快照")?;
+    if let Err(error) = tokio::fs::rename(&staged_manifest, &manifest_path).await {
+        tokio::fs::remove_file(&database_path).await.ok();
+        return Err(error).context("无法原子发布备份清单");
+    }
+
+    Ok(ManagedSnapshot {
+        id,
+        created_at: now,
+        database_path,
+        manifest_path,
+        manifest,
+    })
+}
+
+async fn apply_retention(backup_dir: &Path, now: DateTime<Utc>) -> Result<Vec<ManagedSnapshot>> {
+    let snapshots = list_managed_snapshots(backup_dir).await?;
+    let candidates = snapshots
+        .iter()
+        .map(|snapshot| RetentionSnapshot {
+            id: snapshot.id.clone(),
+            created_at: snapshot.created_at,
+        })
+        .collect::<Vec<_>>();
+    let plan = plan_retention(&candidates, now, BACKUP_RETENTION_DAYS);
+    for expired in plan.delete {
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == expired.id)
+            .ok_or_else(|| anyhow!("保留策略返回了未知快照 {}", expired.id))?;
+        tokio::fs::remove_file(&snapshot.manifest_path)
+            .await
+            .with_context(|| format!("无法删除过期清单 {}", snapshot.manifest_path.display()))?;
+        tokio::fs::remove_file(&snapshot.database_path)
+            .await
+            .with_context(|| format!("无法删除过期快照 {}", snapshot.database_path.display()))?;
+    }
+    list_managed_snapshots(backup_dir).await
+}
+
+pub async fn run_backup_cycle(state: &AppState, now: DateTime<Utc>) -> Result<()> {
+    state.backup_status.started(now).await;
+    let result = async {
+        let backup_dir = backup_directory(&state.config)?;
+        let existing = list_managed_snapshots(&backup_dir).await?;
+        if !existing
+            .iter()
+            .any(|snapshot| snapshot.created_at.date_naive() == now.date_naive())
+        {
+            create_managed_snapshot(&state.db, &backup_dir, now).await?;
+        }
+        let retained = apply_retention(&backup_dir, now).await?;
+        Ok::<_, anyhow::Error>(retained.first().map(|snapshot| snapshot.id.clone()))
+    }
+    .await;
+
+    match result {
+        Ok(latest_snapshot_id) => {
+            state.backup_status.succeeded(now, latest_snapshot_id).await;
+            Ok(())
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "scheduled database backup failed");
+            state.backup_status.failed(&error).await;
+            Err(error)
+        }
+    }
+}
+
+pub fn spawn_backup_scheduler(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            let _ = run_backup_cycle(&state, Utc::now()).await;
+            tokio::time::sleep(StdDuration::from_secs(60 * 60)).await;
+        }
+    });
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups",
+    responses((status = 200, body = [BackupListItem]), (status = 401, body = crate::error::ErrorBody)),
+    security(("cookieAuth" = []), ("bearerAuth" = []))
+)]
+pub async fn list_backups(
+    State(state): State<AppState>,
+    _user: AuthUser,
+) -> Result<Json<Vec<BackupListItem>>, ApiError> {
+    let backup_dir = backup_directory(&state.config).map_err(ApiError::internal)?;
+    let snapshots = list_managed_snapshots(&backup_dir)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(
+        snapshots
+            .into_iter()
+            .map(|snapshot| BackupListItem {
+                id: snapshot.id,
+                created_at: snapshot.manifest.created_at_utc,
+                size: snapshot.manifest.database_size_bytes,
+                sha256: snapshot.manifest.database_sha256,
+                schema_version: snapshot
+                    .manifest
+                    .schema_migration_versions
+                    .last()
+                    .copied()
+                    .unwrap_or_default(),
+            })
+            .collect(),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups/status",
+    responses((status = 200, body = BackupRuntimeStatus), (status = 401, body = crate::error::ErrorBody)),
+    security(("cookieAuth" = []), ("bearerAuth" = []))
+)]
+pub async fn backup_status(
+    State(state): State<AppState>,
+    _user: AuthUser,
+) -> Json<BackupRuntimeStatus> {
+    Json(state.backup_status.get().await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups/{id}",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, content_type = "application/octet-stream"),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody)
+    ),
+    security(("cookieAuth" = []), ("bearerAuth" = []))
+)]
+pub async fn download_backup(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    _user: AuthUser,
+) -> Result<Response, ApiError> {
+    parse_snapshot_id(&id)
+        .map_err(|_| ApiError::bad_request("invalid_backup_id", "备份 ID 格式不正确"))?;
+    let backup_dir = backup_directory(&state.config).map_err(ApiError::internal)?;
+    let snapshots = list_managed_snapshots(&backup_dir)
+        .await
+        .map_err(ApiError::internal)?;
+    let snapshot = snapshots
+        .into_iter()
+        .find(|snapshot| snapshot.id == id)
+        .ok_or_else(|| ApiError::not_found("备份不存在"))?;
+    check_against_manifest(&snapshot.database_path, &snapshot.manifest)
+        .await
+        .map_err(ApiError::internal)?;
+    let file = tokio::fs::File::open(&snapshot.database_path)
+        .await
+        .map_err(ApiError::internal)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_LENGTH,
+            snapshot.manifest.database_size_bytes,
+        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from_stream(ReaderStream::new(file)))
+        .map_err(ApiError::internal)
 }
 
 /// 生成一份经过校验的快照，返回快照文件路径与其 manifest。
@@ -301,6 +683,7 @@ async fn scalar_text(conn: &libsql::Connection, sql: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{email::DevFileEmailSender, rate_limit::RateLimiter};
 
     async fn application_db(path: &Path) -> Database {
         let db = libsql::Builder::new_local(path).build().await.unwrap();
@@ -357,6 +740,26 @@ mod tests {
         .await
         .unwrap();
         db
+    }
+
+    async fn test_state(root: &Path) -> AppState {
+        let config = Config {
+            app_env: "test".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            public_base_url: "http://test.local".into(),
+            database_url: format!("file:{}", root.join("live.db").display()),
+            turso_auth_token: None,
+            dev_mail_dir: root.join("mail"),
+            web_dist_dir: root.join("web"),
+        };
+        let db = crate::db::connect(&config).await.unwrap();
+        AppState {
+            db: Arc::new(db),
+            email: Arc::new(DevFileEmailSender::new(config.dev_mail_dir.clone())),
+            config: Arc::new(config),
+            rate_limiter: RateLimiter::default(),
+            backup_status: BackupStatusStore::default(),
+        }
     }
 
     #[tokio::test]
@@ -429,6 +832,50 @@ mod tests {
 
         let error = check_against_manifest(&path, &manifest).await.unwrap_err();
         assert!(error.to_string().contains("哈希与 manifest 不一致"));
+    }
+
+    #[tokio::test]
+    async fn startup_cycle_backfills_once_and_publishes_verified_pair() {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_state(root.path()).await;
+        let now = "2026-08-10T02:03:04Z".parse().unwrap();
+
+        run_backup_cycle(&state, now).await.unwrap();
+        run_backup_cycle(&state, "2026-08-10T20:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+
+        let backup_dir = backup_directory(&state.config).unwrap();
+        let snapshots = list_managed_snapshots(&backup_dir).await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].id, "2026-08-10T02:03:04Z");
+        check_against_manifest(&snapshots[0].database_path, &snapshots[0].manifest)
+            .await
+            .unwrap();
+        let status = state.backup_status.get().await;
+        assert!(!status.running);
+        assert_eq!(
+            status.latest_snapshot_id.as_deref(),
+            Some("2026-08-10T02:03:04Z")
+        );
+        assert!(status.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn filesystem_retention_never_deletes_the_only_successful_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let db = seeded_db(root.path()).await;
+        let backup_dir = root.path().join("backups");
+        create_managed_snapshot(&db, &backup_dir, "2026-01-01T00:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+
+        let retained = apply_retention(&backup_dir, "2026-08-10T00:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].id, "2026-01-01T00:00:00Z");
     }
 
     #[tokio::test]

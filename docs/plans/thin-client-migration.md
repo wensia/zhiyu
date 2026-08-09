@@ -66,7 +66,7 @@
 | 任务 | 状态 | 备注 |
 |---|---|---|
 | T1 备份（手动） | **已完成** | 本机 + 服务器各一份，integrity ok / fk 0，双重校验 |
-| T1 备份脚本 | **已返工，未验证** | 服务器**未装 restic**，脚本尚未实跑过 |
+| T1 自动备份 | **改为应用内实现** | API 启动补跑 + 定时快照，复用 `backup.rs`，保留 30 天且兜底最新一份 |
 | T4 桌面壳瘦身 | **已完成** | 净删 2945 行，`lib.rs` 425→76 |
 | T2 self-host 模式 | **已完成并上线** | 邮件路由返回 `email_unavailable`，已线上验证 |
 | T3 API 密钥 | **已完成并上线** | Bearer 认证、CSRF 豁免均已线上验证 |
@@ -119,7 +119,7 @@ cargo 加载 workspace 时因缺 member manifest 整体失败。补 stub manifes
 **后果**：桌面壳现在指向 `zhiyu.askfish.net`，打开记账页会失败。阶段一必须补一步
 「重建镜像 + 跑迁移 8、9」，且该步骤需要作者在服务器上执行，不能交给本地 agent。
 
-### `scripts/server-backup.sh` 的三个阻碍
+### `scripts/server-backup.sh` 的三个阻碍（已由应用内备份替代）
 
 1. **路径混用容器与宿主机**（`:5-9`）。写快照到 `/data/backups`（容器内），却检查
    `/opt/zhiyu/data/backups`（宿主机）。容器内跑第 65 行必挂；宿主机跑第 40 行必挂。
@@ -128,9 +128,11 @@ cargo 加载 workspace 时因缺 member manifest 整体失败。补 stub manifes
 
 另：第 4 行 `readonly PATH=...` 应去掉，restic 装在非标准路径时会找不到。
 
-**修法**：统一按宿主机路径；sqlite3 走一次性容器
-（`docker run --rm -v /opt/zhiyu/data:/src:ro -v <out>:/out alpine sh -c "apk add sqlite && ..."`，
-已实测可用）；备份输出目录改到 ubuntu 有写权限的位置。
+**本轮决定（2026-08-10）**：删除该宿主机脚本，改由 API 进程直接在数据目录的
+`backups/` 下生成每日快照。原因是宿主机既没有 `sqlite3` 也没有 `restic`，继续走 cron
+会额外依赖 Docker、包下载、宿主机权限和对象存储工具；应用内实现可以直接复用已经过
+测试的 `backup.rs::create_snapshot` / `verify_snapshot` / `Manifest`，少一层运行依赖，
+并能把失败写入进程日志和可查询状态，补上“备份静默失败”的 critical gap。
 
 ---
 
@@ -143,20 +145,16 @@ cargo 加载 workspace 时因缺 member manifest 整体失败。补 stub manifes
 
 服务器上有真实账本，动任何东西之前先有可回滚的备份。
 
-新增 `scripts/server-backup.sh`（在服务器跑，不是应用代码）：
+由 API 进程内的 Tokio 定时任务执行：
 
 ```
-1. VACUUM INTO 生成快照 → /data/backups/ledger.sqlite3 + manifest.json
-2. 运行 integrity_check + foreign_key_check
-3. restic backup /opt/zhiyu/data/backups
-4. restic forget --keep-daily 7 --keep-weekly 4 --keep-monthly 6 --prune
+1. 启动时当天没有快照则立即补跑，之后每日生成 `zhiyu-<RFC3339>.db` 与 manifest
+2. 复用 `backup.rs` 的 VACUUM INTO、integrity_check、foreign_key_check 与 SHA-256
+3. 服务端保留 30 天内全部成功快照，并无条件保留最新一份
+4. 失败写入 tracing error 和可查询运行状态，不再依赖宿主机 cron/restic
 ```
 
-restic repo 指向腾讯云 COS（S3 兼容端点）。加密、增量、去重、保留策略全部由 restic
-承担。cron 或 systemd timer 触发。
-
-**验收**：跑一次 `restic restore` 到临时目录，用 `scripts/backup-drill.sh` 的思路
-验证恢复出来的库能通过完整性校验。没有验证过的备份不算备份。
+桌面端再通过认证下载这些已验证快照并独立保留 30 天；应用完全退出时不会生成新快照。
 
 ### T2 self-host 模式（解决 Issue 1）
 

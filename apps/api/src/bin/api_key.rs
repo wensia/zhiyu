@@ -19,6 +19,7 @@ async fn main() -> Result<()> {
         config: Arc::new(config),
         email: Arc::new(email_sender),
         rate_limiter: RateLimiter::default(),
+        backup_status: Default::default(),
     };
     let key = auth::issue_api_key(&state, &email)
         .await
