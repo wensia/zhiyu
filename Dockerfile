@@ -10,6 +10,13 @@ RUN printf '%s\n' \
 WORKDIR /src
 COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
 COPY apps/api ./apps/api
+# workspace 有 Tauri 成员，但桌面壳不进服务端镜像。cargo 加载 workspace 时会要求
+# 每个 member 的 manifest 存在，缺了就整体失败，所以给它一个 stub：真 manifest
+# 保证 --locked 校验通过，空源文件满足路径检查。它不参与 -p zhiyu-api 的编译。
+COPY apps/desktop/src-tauri/Cargo.toml ./apps/desktop/src-tauri/Cargo.toml
+RUN mkdir -p apps/desktop/src-tauri/src \
+    && : > apps/desktop/src-tauri/src/lib.rs \
+    && : > apps/desktop/src-tauri/src/main.rs
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/target \
     cargo build --release --locked -p zhiyu-api --bin zhiyu-api --bin zhiyu-api-key \
