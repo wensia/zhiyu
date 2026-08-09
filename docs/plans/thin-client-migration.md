@@ -235,9 +235,32 @@ T2 完成后 cookie 带 `Secure` + `__Host-` 前缀。**必须在真实 Tauri �
 
 ---
 
-## 阶段二：离线可用
+## 阶段二：~~离线可用~~ —— 已取消（2026-08-10）
 
-### T8 离线队列
+**原设计（前端缓存 + 异步同步队列）已废弃。** 它扛不住长期离线，因为读这一侧仍依赖
+服务器。改为发布两个发行版二选一，见 ADR-0001 的「发行版二选一」一节。
+
+取消的工作：T8 离线队列、T10 离线 UX 与乐观锁冲突处理、水位线增量同步、
+`resumePausedMutations` 全套。
+
+**保留 T9，但范围缩小**（见下）。本地版列为未来规划，暂不实现。
+
+### T9 幂等键修复（保留，范围缩小）
+
+这个陷阱不会因为砍掉离线队列而消失。`apps/web/src/api/client.ts:135`：
+
+```ts
+const idempotencyKey = () => crypto.randomUUID()
+```
+
+它在**发送瞬间**求值。普通场景就会踩：点保存 → 请求超时 → 前端重试 →
+拿到新 key → 服务端 `replay_idempotency` 认不出 → **记两笔账**。
+
+修法比原计划小一个量级：只需在单次 mutation 生命周期内固定 key，
+**不需要**持久化到 IndexedDB。约 18 个写方法，顺带把重复的
+`headers: { "Idempotency-Key": idempotencyKey() }` 抽成统一包装。
+
+### ~~T8 离线队列~~（已取消）
 
 用 `@tanstack/react-query` 官方持久化，**不自造**：
 `@tanstack/react-query-persist-client` + IndexedDB persister，配合
