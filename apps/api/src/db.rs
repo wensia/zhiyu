@@ -31,6 +31,11 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (9, TRANSACTIONS_MIGRATION),
 ];
 
+/// 返回当前程序认识的全部迁移版本，供离线恢复判断备份是否可安全打开。
+pub fn known_migration_versions() -> Vec<i64> {
+    MIGRATIONS.iter().map(|(version, _)| *version).collect()
+}
+
 pub async fn connect(config: &Config) -> Result<Database> {
     let db = if config.database_url.starts_with("libsql://")
         || config.database_url.starts_with("https://")
