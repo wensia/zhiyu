@@ -7,12 +7,24 @@
     <link rel="stylesheet" href="error.css" />
   </head>
   <body>
-    <main>
+    <!-- 主窗口在 macOS 上用 overlay 标题栏（hidden_title），交通灯浮在页面左上角。
+         没有这条拖拽带，用户在错误页里根本拖不动窗口。 -->
+    <div class="titlebar" data-tauri-drag-region title="拖动以移动窗口"></div>
+
+    <main class="sheet">
       <p class="eyebrow">知余桌面版</p>
       <h1>无法连接到你的服务器</h1>
-      <p id="failure-reason" class="reason">桌面会话交接失败。</p>
+
+      <hr class="rule" />
+
+      <dl class="detail">
+        <dt>失败原因</dt>
+        <dd id="failure-reason">桌面会话交接失败。</dd>
+      </dl>
+
       <p class="guidance">请检查服务器地址和 api-key，然后重新保存连接设置。</p>
-      <a class="button" href="zhiyu://open-settings">打开连接设置</a>
+
+      <a class="action" href="zhiyu://open-settings">打开连接设置</a>
     </main>
   </body>
 </html>

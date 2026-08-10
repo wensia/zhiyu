@@ -131,6 +131,19 @@ fn resolve_development_connection(path: &Path) -> Result<Option<ResolvedConnecti
     }))
 }
 
+/// 这个地址是不是 `pnpm tauri dev` 起的那个本地前端。
+///
+/// dev 下 `ZHIYU_DESKTOP_URL` 把「服务器」换成了 Vite 的回环端口，请求先打到它、
+/// 再由它的代理转发到真正的服务端。判同源而不是只看回环，是因为回环上还可能跑着
+/// 别的东西，不该一并当成自家前端。
+#[cfg(debug_assertions)]
+pub fn is_development_frontend(url: &Url) -> bool {
+    env::var(DEV_SERVER_URL_ENV)
+        .ok()
+        .and_then(|value| validate_server_url(&value).ok())
+        .is_some_and(|dev_url| dev_url.origin() == url.origin())
+}
+
 fn fallback_connection(
     config: ConnectionConfig,
     server_url: Url,

@@ -310,9 +310,7 @@ fn confirm_new_session_cookie(
     );
     if !found {
         #[cfg(debug_assertions)]
-        if server_url.host_str() == Some("127.0.0.1")
-            && std::env::var_os("ZHIYU_DESKTOP_URL").is_some()
-        {
+        if config::is_development_frontend(server_url) {
             tracing::warn!("allowing loopback dev navigation after WKWebView cookie readback lag");
             return Ok(());
         }
@@ -616,7 +614,8 @@ fn open_handoff_window(
 pub(crate) async fn handoff_main_window_session(app: &AppHandle, client: &BackupClient) {
     let result = match client.create_handoff_ticket().await {
         Ok(ticket) => open_handoff_window(app, client, ticket),
-        Err(error) => Err(error.context("用 api-key 获取桌面交接票据失败")),
+        // context 保持中性：连不上前端/服务器时，「api-key 获取失败」会把人往凭证方向带。
+        Err(error) => Err(error.context("建立桌面会话失败")),
     };
     if let Err(error) = result {
         let readable = format!("{error:#}");

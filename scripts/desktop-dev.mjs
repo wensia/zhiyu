@@ -160,6 +160,10 @@ async function shutdown(exitCode, signal = "SIGTERM") {
 
 process.once("SIGINT", () => void shutdown(0, "SIGTERM"))
 process.once("SIGTERM", () => void shutdown(143, "SIGTERM"))
+// 关掉终端窗口发来的是 SIGHUP，node 默认直接退出、不跑上面的清理。而子进程是 detached
+// 的（独立进程组，这样才能连子树一起杀），于是 cargo tauri 活了下来变成孤儿：窗口还开着，
+// Vite 已经没了，界面上每个请求都连不上。接住它，走正常关停。
+process.once("SIGHUP", () => void shutdown(129, "SIGTERM"))
 
 try {
   const serverUrl = await loadSavedServerUrl()

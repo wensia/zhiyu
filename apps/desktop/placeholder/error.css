@@ -1,8 +1,70 @@
+/*
+ * 连接失败页 —— kiln 纸面层（paper）
+ *
+ * 判据只有一句：这个表面上有没有"要反复做的工作"？没有 → 纸面层。
+ * 连接设置窗口是工作台（settings.css），这一页是纸：一句事实，一个出口。
+ *
+ * 因此它反转工作台的三条规则：
+ *   密度   —— 留白优先，留白是结构本身，不是待填的空白；
+ *   材质   —— 只用颗粒和印刷细线，禁用一切柔光阴影（纸不浮在纸上面）；
+ *   字号   —— 天花板从 --text-data(22px) 抬到 --text-title(28px)。
+ *
+ * 继承不变的是釉色 palette、单锚点、反装饰、token 唯一真相源。
+ * 本地页面不能引远程资源（CSP + 需离线可用），token 在此内联声明，
+ * 值与 kiln tokens/colors.css + tokens/paper.css 逐条对应。改动以 token 表为准。
+ */
+
 :root {
-  color: #28251f;
-  background: #f5f2eb;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 15px;
+  /* ---- 釉色 palette —— 与工作台同一窑，纸面不新增任何裸色值 ---- */
+  --palette-clay: #b6533c;
+  --palette-canvas: #fbfaf8;
+  --palette-surface: #f1eee9;
+  --palette-line: #d8d3cc;
+  --palette-ink: #2f2f2f;
+  --palette-muted-ink: color-mix(in srgb, var(--palette-ink) 68%, var(--palette-line));
+
+  /* ---- 纸张表面：比工作台画布更暖更实，它要看起来像纸而不是像屏幕底色 ---- */
+  --paper: color-mix(in srgb, var(--palette-surface) 55%, var(--palette-canvas));
+  --paper-foreground: var(--palette-ink);
+  --paper-muted: var(--palette-muted-ink);
+  --primary: var(--palette-clay);
+  --primary-foreground: #ffffff;
+
+  /* ---- 印刷质感：颗粒 / 细线。没有第三种，也没有阴影 ---- */
+  --paper-grain: color-mix(in srgb, var(--palette-ink) 6%, transparent);
+  --paper-rule: color-mix(in srgb, var(--palette-ink) 20%, transparent);
+
+  /* ---- 纸面字号 ----
+     标题取 --text-title 而非 --text-display(48px)：这是一扇最小 960×640 的
+     应用窗口，48px 中文标题会折成两行、把连续留白吃掉，页面反而滑回
+     「信息稀疏的工作台」那个中间态。字号下限 11px 在两层通用，此处不触碰。 */
+  --text-title: 28px;
+  --text-paper-body: 15px;
+  --text-meta: 12px;
+  --leading-tight: 1.25;
+  --leading-relaxed: 1.6;
+
+  /* ---- 间距：工作台阶梯止于 48px，纸面从这里往上续 ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* 纸面控件比工作台松一档：36px 是为了一屏塞下更多行，这张纸没有"更多行" */
+  --paper-control-height: 44px;
+  --radius-control: 4px;
+
+  /* 字体：与工作台同一栈。CSP 禁远程资源，webfont 不可用，
+     系统中文栈是 kiln 明列的离线 fallback，不是缺陷。
+     纸面允许的衬线要么依赖远程 Noto Serif SC（拿不到），要么退化成
+     Windows 的 SimSun，跨平台不成立，故不引入第二个字族。 */
+  --font-sans: -apple-system, "Helvetica Neue", Arial, "Noto Sans SC",
+    "Hiragino Sans GB", STHeiti, "Microsoft YaHei", "Source Han Sans SC", sans-serif;
+
+  --motion-control: 140ms;
+  --ease: cubic-bezier(0.2, 0, 0.2, 1);
 }
 
 * {
@@ -10,62 +72,126 @@
 }
 
 body {
-  min-height: 100vh;
+  min-height: 100svh;
   margin: 0;
   display: grid;
   place-items: center;
-  padding: 40px;
+  padding: var(--space-16) var(--space-12) var(--space-12);
+  color: var(--paper-foreground);
+  background-color: var(--paper);
+  /* 颗粒：极轻，"看不见但感觉得到"的量。能一眼看出网点图案就已经过了。 */
+  background-image: radial-gradient(var(--paper-grain) 0.5px, transparent 0.5px);
+  background-size: 3px 3px;
+  font-family: var(--font-sans);
+  font-size: var(--text-paper-body);
+  line-height: var(--leading-relaxed);
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  -webkit-font-smoothing: antialiased;
 }
 
-main {
-  width: min(100%, 620px);
-  padding: 38px;
-  border: 1px solid #d9d3c8;
-  border-radius: 16px;
-  background: #fffefa;
-  box-shadow: 0 14px 44px rgb(50 43 32 / 9%);
+/* macOS overlay 标题栏下的拖拽带。透明、无内容，只负责让窗口能被拖动，
+   并把内容让开左上角的交通灯。 */
+.titlebar {
+  position: fixed;
+  inset: 0 0 auto;
+  height: 40px;
+}
+
+/* ── 纸 ─────────────────────────────────────────────
+   一张纸上只有一个视觉事件：标题。其余全是它的注脚 —— 更小、更淡。
+   宽度收紧到内容需要的宽度，不为填满视口而铺开。 */
+
+.sheet {
+  width: min(100%, 560px);
 }
 
 .eyebrow {
-  margin: 0 0 10px;
-  color: #766f62;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
+  /* 中文不做 uppercase，字距保持 0：拉开的字距会把中文拆散 */
+  margin: 0 0 var(--space-2);
+  color: var(--paper-muted);
+  font-size: var(--text-meta);
 }
 
 h1 {
-  margin: 0 0 18px;
-  font-size: 30px;
-  letter-spacing: -0.03em;
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: 600;
+  line-height: var(--leading-tight);
 }
 
-.reason {
+/* 印刷细线 —— 纸面的分层手段。工作台在这里会放一张白卡加暖阴影，
+   那是屏幕的语言；纸上不投影。 */
+.rule {
+  height: 1px;
+  margin: var(--space-12) 0 var(--space-6);
+  border: 0;
+  background: var(--paper-rule);
+}
+
+/* ── 注脚：失败原因 ─────────────────────────────────
+   旧版把原因做成一整块琥珀色填充，它和标题争"先看哪个"，还额外造出
+   第二个高饱和信号。这里降成一组标签 + 正文，锚点让给唯一的动作。 */
+
+.detail {
   margin: 0;
-  padding: 14px 16px;
-  border-radius: 9px;
-  background: #fff0dd;
-  color: #704717;
-  line-height: 1.6;
+}
+
+.detail dt {
+  color: var(--paper-muted);
+  font-size: var(--text-meta);
+}
+
+.detail dd {
+  margin: var(--space-1) 0 0;
   overflow-wrap: anywhere;
 }
 
+/* 「发生了什么」和「怎么办」是同一组，靠得近；动作单独隔开一大块。
+   等距三段会把主体与注脚的落差摊平，读起来像三条并列的信息。 */
 .guidance {
-  margin: 18px 0 24px;
-  color: #625d54;
-  line-height: 1.6;
+  margin: var(--space-6) 0 0;
+  color: var(--paper-muted);
 }
 
-.button {
+/* ── 唯一锚点 ───────────────────────────────────────
+   一屏只有一个高饱和信号，这张纸上就是这个出口动作。填充为平铺，
+   无浮雕、无斜面、无投影。 */
+
+.action {
   display: inline-flex;
-  min-height: 44px;
   align-items: center;
   justify-content: center;
-  padding: 0 18px;
-  border-radius: 9px;
-  background: #393126;
-  color: white;
-  font-weight: 650;
+  height: var(--paper-control-height);
+  margin-top: var(--space-12);
+  padding: 0 var(--space-6);
+  border-radius: var(--radius-control);
+  color: var(--primary-foreground);
+  background: var(--primary);
+  font-weight: 500;
   text-decoration: none;
+  transition: background var(--motion-control) var(--ease);
+}
+
+.action:hover {
+  background: color-mix(in srgb, var(--primary) 88%, black);
+}
+
+.action:active {
+  /* 按压只下沉 1px；从不缩放 */
+  transform: translateY(1px);
+}
+
+.action:focus-visible {
+  /* 焦点环用 outline 而非 box-shadow：纸面层禁用一切 box-shadow */
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }

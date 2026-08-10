@@ -168,7 +168,13 @@ impl BackupClient {
             .timeout(SESSION_HANDOFF_TIMEOUT)
             .send()
             .await
-            .map_err(|error| anyhow!("网络失败：无法用 api-key 获取桌面交接票据：{error}"))?;
+            .map_err(|error| {
+                transport_error(
+                    &connection.server_url,
+                    "无法用 api-key 获取桌面交接票据",
+                    error,
+                )
+            })?;
         let response = require_success(response, "获取桌面交接票据").await?;
         let body = response
             .json::<HandoffTicketResponse>()
@@ -270,7 +276,7 @@ impl BackupClient {
             .bearer_auth(api_key)
             .send()
             .await
-            .map_err(|error| anyhow!("网络失败：无法获取服务器备份列表：{error}"))?;
+            .map_err(|error| transport_error(base, "无法获取服务器备份列表", error))?;
         let response = require_success(response, "获取服务器备份列表").await?;
         let body = response
             .bytes()
@@ -322,7 +328,9 @@ impl BackupClient {
             .bearer_auth(api_key)
             .send()
             .await
-            .map_err(|error| anyhow!("网络失败：下载快照 {} 失败：{error}", snapshot.id))?;
+            .map_err(|error| {
+                transport_error(base, &format!("下载快照 {} 失败", snapshot.id), error)
+            })?;
         let mut response = require_success(response, &format!("下载快照 {}", snapshot.id)).await?;
         let std_file = OpenOptions::new()
             .create(true)
@@ -560,6 +568,27 @@ pub async fn save_backup_settings(
         .save_settings(input, &app)
         .await
         .map_err(|error| format!("{error:#}"))
+}
+
+/// 请求压根没发出去时，给出一句能照着做的原因。
+///
+/// reqwest 的原文是一长串英文 URL 加 "tcp connect error: Connection refused (os error
+/// 61)"，贴到错误页或连接设置的备份状态里等于什么都没说。而 dev 下这个连接失败几乎
+/// 只有一种成因：`pnpm tauri dev` 的 Vite 那半边退出了（终端被关掉、进程被杀），只剩
+/// Tauri 窗口指着一个没人监听的回环端口。这种时候该说的是「本地前端没了」，不是 TCP
+/// 错误码。
+fn transport_error(server_url: &Url, operation: &str, error: reqwest::Error) -> anyhow::Error {
+    if !error.is_connect() {
+        return anyhow!("网络失败：{operation}：{error}");
+    }
+    #[cfg(debug_assertions)]
+    if crate::config::is_development_frontend(server_url) {
+        return anyhow!(
+            "本地前端 {server_url} 没有响应：`pnpm tauri dev` 里的 Vite 多半已经退出，\
+             只剩这个窗口还指着它。请关掉窗口，重新运行 pnpm tauri dev。"
+        );
+    }
+    anyhow!("网络失败：{operation}：连不上服务器 {server_url}：{error}")
 }
 
 fn endpoint(base: &Url, relative: &str) -> Result<Url> {

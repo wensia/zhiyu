@@ -35,15 +35,46 @@ export class ApiClientError extends Error {
   }
 }
 
+// 页面从回环地址来，说明这是 `pnpm tauri dev`：所有请求都要过本地 Vite 的代理，
+// 而失败的头号成因就是 Vite 那半边先退出了，只剩 Tauri 窗口指着一个没人监听的端口。
+// 页面看着完好，每个请求却都连不上——直说这件事，比让人去猜网络强。
+const IS_LOCAL_DEV_PAGE = ["127.0.0.1", "localhost"].includes(location.hostname)
+const NETWORK_UNREACHABLE_MESSAGE = IS_LOCAL_DEV_PAGE
+  ? "无法连接服务器：本地 Vite 代理可能已退出，请重新运行 pnpm tauri dev"
+  : "无法连接服务器，请检查网络后重试"
+
+/**
+ * 请求根本没到达服务器：断网、DNS 失败、连接被拒、代理进程没了。
+ *
+ * 这种情况下 fetch 抛的是 `TypeError`，message 由引擎决定且只有英文——WKWebView
+ * 说 "Load failed"，Chrome 说 "Failed to fetch"。界面统一渲染 `error.message`，
+ * 于是这句英文会原样贴到用户脸上，既看不懂也指不出问题在哪。这里换成中文，原始
+ * 错误挂在 `cause` 上留给控制台。
+ *
+ * 状态码留 0：语义上「一个响应都没有」，也让 `status === 409` 这类判断自然落空。
+ */
+export class ApiNetworkError extends ApiClientError {
+  constructor(cause: unknown) {
+    super(0, { code: "network_unreachable", message: NETWORK_UNREACHABLE_MESSAGE })
+    this.name = "ApiNetworkError"
+    this.cause = cause
+  }
+}
+
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
-  const response = await fetch(`/api/v1${path}`, {
-    ...init,
-    credentials: "include",
-    headers: {
-      ...(init.body ? { "Content-Type": "application/json" } : {}),
-      ...init.headers,
-    },
-  })
+  let response: Response
+  try {
+    response = await fetch(`/api/v1${path}`, {
+      ...init,
+      credentials: "include",
+      headers: {
+        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...init.headers,
+      },
+    })
+  } catch (cause) {
+    throw new ApiNetworkError(cause)
+  }
   if (response.status === 204) return undefined as T
   const body = await response.json().catch(() => ({}))
   if (!response.ok) throw new ApiClientError(response.status, body)
