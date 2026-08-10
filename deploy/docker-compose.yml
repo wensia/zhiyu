@@ -9,7 +9,8 @@ services:
     environment:
       APP_ENV: self-host
       BIND_ADDR: 0.0.0.0:8790
-      PUBLIC_BASE_URL: https://zhiyu.askfish.net
+      # 真实域名不进仓库：部署时由 deploy/.env 提供（见 .env.example）
+      PUBLIC_BASE_URL: ${PUBLIC_BASE_URL:?PUBLIC_BASE_URL 未设置，请在 deploy/.env 中配置}
       DATABASE_URL: file:/data/preview.db
       DEV_MAIL_DIR: /data/dev-mail
       WEB_DIST_DIR: /app/web

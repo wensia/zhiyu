@@ -12,7 +12,7 @@
 
 | 事实 | 来源 | 结论 |
 |---|---|---|
-| 服务端已部署且在线 | `curl https://zhiyu.askfish.net/readyz` → HTTP 200 | 「部署到服务器」**已完成** |
+| 服务端已部署且在线 | `curl https://ledger.example.com/readyz` → HTTP 200 | 「部署到服务器」**已完成** |
 | 真实账本在服务器 | 作者确认 | `/opt/zhiyu/data/preview.db` 是权威数据 |
 | 桌面库无真实数据 | `app.zhiyu.desktop/zhiyu.db`：`ledger_transactions=0`、`ledger_accounts=0`、`debts=0` | 桌面端**无需数据迁移** |
 | production 会拒绝启动 | `config.rs:19-20` `bail!("production requires a real EmailSender")` | 线上靠 `APP_ENV=development` 绕过（`Dockerfile:50`） |
@@ -27,7 +27,7 @@
 ```
                         ┌─────────────────────────────┐
                         │  常在线服务器                │
-   Tauri 壳             │  zhiyu.askfish.net          │
+   Tauri 壳             │  ledger.example.com          │
    ┌──────────┐         │  ┌───────────────────────┐  │
    │ WebView  │────────▶│  │ Axum /api/v1          │  │
    │ 远程 URL │  session│  │ (权威，持明文)         │  │
@@ -100,23 +100,23 @@ cargo 加载 workspace 时因缺 member manifest 整体失败。补 stub manifes
 
 **遗留**：服务器未装 restic，`scripts/server-backup.sh` 至今没有实跑验证过；
 签发 API 密钥的 CLI 是 `docker exec zhiyu zhiyu-api-key <邮箱>`，
-密钥必须签给 `demo-20260802@zhiyu.app` 才能读到真实账本。
+密钥必须签给 `<your-account>@example.com` 才能读到真实账本。
 
 ### 生产环境实测结论（2026-08-10）
 
-服务器 `ubuntu@139.155.151.124`，密钥 `~/.ssh/ai-ditui-139-155-151-124.pem`。
+服务器 `<deploy-user>@<your-server>`，密钥 `~/.ssh/<your-key>.pem`。
 
 - 数据库：`/opt/zhiyu/data/preview.db`（宿主机）← 挂载到容器 `/data`
 - **生产库停在迁移 7，本地在 9**。缺迁移 8、9，因此**没有 `ledger_transactions` 表**
 - 库内只有债务/往来数据：`debts: 5`、`repayment_events: 28`、`debt_addition_events: 3`、
-  `counterparties: 5`、`ledger_accounts: 3`；唯一用户是 `demo-20260802@zhiyu.app`
+  `counterparties: 5`、`ledger_accounts: 3`；唯一用户是 `<your-account>@example.com`
 - `zhiyu` 容器 `Up 6 days`，镜像约 8-04 构建，此后的提交（记账 `49e6cc9`、
   桌面版 `73d677f`、备份 `6eb5d73`）均未上线
 - **宿主机和容器内都没有 `sqlite3`**
 - `/opt/zhiyu/data` 属主是 `nobody:nogroup`，ubuntu 用户无写权限
 - 没有 `-wal` / `-shm` 文件
 
-**后果**：桌面壳现在指向 `zhiyu.askfish.net`，打开记账页会失败。阶段一必须补一步
+**后果**：桌面壳现在指向 `ledger.example.com`，打开记账页会失败。阶段一必须补一步
 「重建镜像 + 跑迁移 8、9」，且该步骤需要作者在服务器上执行，不能交给本地 agent。
 
 ### `scripts/server-backup.sh` 的三个阻碍（已由应用内备份替代）
@@ -204,7 +204,7 @@ cargo 加载 workspace 时因缺 member manifest 整体失败。补 stub manifes
 `apps/desktop/src-tauri/Cargo.toml` 摘掉 `zhiyu-api`、`axum`、`libsql` 依赖。
 桌面端不再 link 后端、不再开 SQLite 连接。
 
-窗口指向 `https://zhiyu.askfish.net`，URL 从配置读取（开发时指向本地 dev server）。
+窗口指向 `https://ledger.example.com`，URL 从配置读取（开发时指向本地 dev server）。
 
 ### T5 服务端 git 备份下线
 

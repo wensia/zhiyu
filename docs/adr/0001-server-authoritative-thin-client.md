@@ -11,7 +11,7 @@
 `products/zhiyu-local-first-m1` 施工（platform-kernel 约 9,626 行 + Finance/Shard/
 Collections/Debt 四模块 + Scheduler + legacy-importer），但**至今没有真实数据**。
 
-与此同时，`main` 线的 Web/Axum/SQLite 服务已部署在 `zhiyu.askfish.net` 并承载真实账本。
+与此同时，`main` 线的 Web/Axum/SQLite 服务已部署在 `ledger.example.com` 并承载真实账本。
 
 促成本次转向的需求：**电脑离线时，账本仍需对外可用**——多端访问，以及 hermes、
 openclaw 等外部系统的接入。这要求一个始终在线、能读写明文数据的节点。
