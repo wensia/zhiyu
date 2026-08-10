@@ -36,7 +36,7 @@ async function registerVerifyLogin(page: Page) {
   await page.getByRole("button", { name: "登录" }).click()
   await expect(page).toHaveURL(/\/app\/debts/)
   await page.goto("/app/accounts")
-  await expect(page.getByRole("heading", { name: "账户管理" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "账户" })).toBeVisible()
 }
 
 async function chooseAccountType(page: Page, dialog: Locator, label: string) {

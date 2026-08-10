@@ -1,7 +1,10 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "远程主窗口不允许调用任何 Tauri IPC",
+  "description": "远程主窗口只允许从标题区域开始拖动窗口",
+  "remote": {
+    "urls": ["http://*", "http://127.0.0.1:5173", "https://*"]
+  },
   "windows": ["main"],
-  "permissions": []
+  "permissions": ["core:window:allow-start-dragging", "allow-reset-main-window"]
 }

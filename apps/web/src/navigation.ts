@@ -1,4 +1,4 @@
-import { HandCoinsIcon, NotebookPenIcon, WalletCardsIcon, type LucideIcon } from "lucide-react"
+import { BarChart3Icon, CalendarDaysIcon, HandCoinsIcon, ListIcon, WalletCardsIcon, type LucideIcon } from "lucide-react"
 
 type NavigationItem = {
   path: string
@@ -9,9 +9,11 @@ type NavigationItem = {
 }
 
 export const navigationItems: NavigationItem[] = [
-  { path: "/app/debts", label: "债务管理", mobileLabel: "债务", icon: HandCoinsIcon, group: "个人账本" },
-  { path: "/app/transactions", label: "记账", mobileLabel: "记账", icon: NotebookPenIcon, group: "个人账本" },
-  { path: "/app/accounts", label: "账户管理", mobileLabel: "账户", icon: WalletCardsIcon, group: "个人账本" },
+  { path: "/app/debts", label: "债务", mobileLabel: "债务", icon: HandCoinsIcon, group: "个人账本" },
+  { path: "/app/calendar", label: "日历", mobileLabel: "日历", icon: CalendarDaysIcon, group: "个人账本" },
+  { path: "/app/transactions", label: "流水", mobileLabel: "流水", icon: ListIcon, group: "个人账本" },
+  { path: "/app/statistics", label: "统计", mobileLabel: "统计", icon: BarChart3Icon, group: "个人账本" },
+  { path: "/app/accounts", label: "账户", mobileLabel: "账户", icon: WalletCardsIcon, group: "个人账本" },
 ]
 
 export function navigationShortcut(index: number) {

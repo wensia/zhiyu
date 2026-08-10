@@ -109,6 +109,11 @@ describe("DebtWorkspace", () => {
 
   it("renders the financial summary and due-soon row", async () => {
     renderWorkspace()
+    expect(screen.getByRole("heading", { name: "债务" })).toBeInTheDocument()
+    expect(screen.queryByText("个人往来")).not.toBeInTheDocument()
+    expect(screen.queryByRole("heading", { name: "债务管理" })).not.toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "新增债务" }).closest(".debt-commandbar")).not.toBeNull()
+    expect(screen.getByRole("region", { name: "债务汇总" }).closest(".debt-commandbar")).not.toBeNull()
     expect(await screen.findByRole("button", { name: "阿青" })).toBeInTheDocument()
     const row = screen.getByRole("row", { name: /阿青 借出/ })
     expect(screen.getByRole("columnheader", { name: "债务概况" })).toBeInTheDocument()
@@ -150,7 +155,7 @@ describe("DebtWorkspace", () => {
     await user.keyboard("{Escape}")
     expect(screen.getByTestId("location")).toHaveTextContent("/app/debts/debt-1")
     await user.click(backButton)
-    expect(await screen.findByRole("heading", { name: "债务管理" })).toBeInTheDocument()
+    expect(await screen.findByRole("heading", { name: "债务" })).toBeInTheDocument()
     expect(screen.getByTestId("location")).toHaveTextContent("/app/debts")
   })
 
@@ -178,7 +183,7 @@ describe("DebtWorkspace", () => {
   it("uses the shared Kiln calendar for debt dates", async () => {
     const user = userEvent.setup()
     renderWorkspace()
-    await user.click(await screen.findByRole("button", { name: /新增债务/ }))
+    await user.click(await screen.findByRole("button", { name: "新增债务" }))
     await user.click(screen.getByRole("button", { name: "发生日期" }))
     expect(screen.getByRole("dialog", { name: "选择日期" })).toBeInTheDocument()
     expect(screen.queryByDisplayValue("2026-08-02")).not.toBeInTheDocument()
@@ -189,7 +194,7 @@ describe("DebtWorkspace", () => {
   it("keeps invalid debt input inside the form", async () => {
     const user = userEvent.setup()
     renderWorkspace()
-    await user.click(screen.getByRole("button", { name: /新增债务/ }))
+    await user.click(screen.getByRole("button", { name: "新增债务" }))
     await user.click(screen.getByRole("button", { name: "保存" }))
     expect(await screen.findByText("请输入正确的本金金额")).toBeInTheDocument()
     expect(api.createDebt).not.toHaveBeenCalled()
@@ -200,7 +205,7 @@ describe("DebtWorkspace", () => {
     vi.mocked(api.createDebt).mockResolvedValue(debt)
     renderWorkspace()
 
-    await user.click(await screen.findByRole("button", { name: /新增债务/ }))
+    await user.click(await screen.findByRole("button", { name: "新增债务" }))
     const dialog = screen.getByRole("dialog", { name: "新增债务" })
     await user.type(within(dialog).getByLabelText("联系人"), "阿青")
     await user.type(within(dialog).getByLabelText("本金（元）"), "1000")
@@ -226,7 +231,7 @@ describe("DebtWorkspace", () => {
     vi.mocked(api.createDebt).mockResolvedValue(debt)
     renderWorkspace()
 
-    await user.click(await screen.findByRole("button", { name: /新增债务/ }))
+    await user.click(await screen.findByRole("button", { name: "新增债务" }))
     const dialog = screen.getByRole("dialog", { name: "新增债务" })
     await user.click(within(dialog).getByRole("button", { name: "赊账·无资金进出" }))
     expect(within(dialog).queryByRole("combobox", { name: "收款账户" })).not.toBeInTheDocument()
@@ -506,7 +511,7 @@ describe("DebtWorkspace", () => {
   it("opens the primary action with the keyboard", async () => {
     const user = userEvent.setup()
     renderWorkspace()
-    const trigger = await screen.findByRole("button", { name: /新增债务/ })
+    const trigger = await screen.findByRole("button", { name: "新增债务" })
     trigger.focus()
     await user.keyboard("{Enter}")
     expect(await screen.findByRole("dialog", { name: "新增债务" })).toBeInTheDocument()

@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor, within } from "@testing-library/react"
+import { useState, type ComponentType } from "react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
 
 import { ApiClientError, api } from "../api/client"
 import { AppToastProvider } from "../components/ui"
-import { TransactionWorkspace } from "./transaction-workspace"
+import { TopbarSlotContext, type TopbarSlots } from "../components/topbar-slots"
+import { CalendarWorkspace, TransactionListWorkspace, TransactionStatisticsWorkspace } from "./transaction-workspace"
 
 vi.mock("../api/client", () => ({
   ApiClientError: class ApiClientError extends Error {
@@ -99,14 +101,17 @@ const summary = {
   transactionCount: 3,
 }
 
-function renderWorkspace() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  const invalidateSpy = vi.spyOn(client, "invalidateQueries")
-  render(<QueryClientProvider client={client}><AppToastProvider><TransactionWorkspace /></AppToastProvider></QueryClientProvider>)
-  return { invalidateSpy }
+function TopbarHarness({ Workspace }: { Workspace: ComponentType }) {
+  const [slots, setSlots] = useState<TopbarSlots>()
+  return <TopbarSlotContext.Provider value={setSlots}><div data-testid="topbar-title">{slots?.title}</div><div data-testid="topbar-actions">{slots?.actions}</div><Workspace /></TopbarSlotContext.Provider>
 }
 
-const cellOf = (date: string) => screen.getByRole("button", { name: new RegExp(`^${date}，`) })
+function renderWorkspace(Workspace: ComponentType = CalendarWorkspace) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+  const invalidateSpy = vi.spyOn(client, "invalidateQueries")
+  render(<QueryClientProvider client={client}><AppToastProvider><TopbarHarness Workspace={Workspace} /></AppToastProvider></QueryClientProvider>)
+  return { invalidateSpy }
+}
 
 describe("TransactionWorkspace", () => {
   beforeEach(() => {
@@ -121,36 +126,42 @@ describe("TransactionWorkspace", () => {
     vi.mocked(api.ledgerAccounts).mockResolvedValue([ledgerAccount])
   })
 
-  it("renders the metrics, a 42-cell Monday-first calendar and the trend chart", async () => {
+  it("keeps calendar content to the 42-cell Monday-first calendar", async () => {
     renderWorkspace()
-    expect(await screen.findByText("本月收入")).toBeInTheDocument()
-    expect(await screen.findByText("¥5,000.00")).toBeInTheDocument()
-    expect(screen.getByText("¥1,900.00")).toBeInTheDocument()
-    expect(screen.getByText("+¥3,100.00")).toBeInTheDocument()
-    expect(screen.getByText("记账笔数")).toBeInTheDocument()
-
-    const calendar = screen.getByLabelText("记账日历")
+    const calendar = await screen.findByLabelText("记账日历")
+    expect(screen.queryByText("本月收入")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("每日趋势")).not.toBeInTheDocument()
+    expect(screen.queryByLabelText("分类占比")).not.toBeInTheDocument()
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument()
+    expect(screen.getByTestId("topbar-actions")).toHaveTextContent("今天")
+    expect(screen.getByRole("button", { name: "上一月" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "下一月" })).toBeInTheDocument()
+    expect(screen.getByRole("button", { name: "记一笔" })).toBeInTheDocument()
     const weekdays = calendar.querySelectorAll(".tx-calendar-weekdays span")
     expect(weekdays[0]).toHaveTextContent("一")
     expect(weekdays[6]).toHaveTextContent("日")
     expect(calendar.querySelectorAll(".tx-day")).toHaveLength(42)
-    expect(calendar.querySelector(".tx-day-today")).toHaveTextContent(String(now.getDate()))
+    const todayButton = calendar.querySelector<HTMLButtonElement>('[aria-current="date"]')
+    expect(todayButton).toBeInTheDocument()
+    expect(todayButton).toHaveAttribute("aria-current", "date")
+    const todayMarker = todayButton!.querySelector(".tx-day-today")
+    expect(todayMarker).toHaveTextContent(String(now.getDate()))
+    expect(todayMarker).toHaveAttribute("data-center-content")
+    expect(todayMarker?.firstElementChild).toHaveAttribute("data-center-ink")
+    expect(calendar.querySelector(".tx-amount-net-positive, .tx-amount-net-negative")).not.toBeInTheDocument()
 
-    expect(document.querySelectorAll(".tx-trend-svg rect")).toHaveLength(2)
-    expect(screen.getAllByText(/累计净流转/).length).toBeGreaterThan(0)
   })
 
-  it("selects a day on first click and opens the quick-add modal on second click", async () => {
+  it("opens the day sheet on one click and creates from an empty day", async () => {
     const user = userEvent.setup()
     renderWorkspace()
     const cell = await screen.findByRole("button", { name: new RegExp(`^${otherDate}，`) })
     await user.click(cell)
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
-    expect(screen.getByLabelText("当日明细").querySelector("strong")).toHaveTextContent(`${now.getMonth() + 1}月${otherDay}日`)
+    expect(await screen.findByRole("dialog")).toBeInTheDocument()
     expect(screen.getByText("当日暂无记录")).toBeInTheDocument()
-
-    await user.click(cellOf(otherDate))
+    await user.click(screen.getByRole("button", { name: "记一笔" }))
     const dialog = await screen.findByRole("dialog", { name: "记一笔" })
+    expect(screen.queryByText("当日暂无记录")).not.toBeInTheDocument()
     expect(within(dialog).getByText(otherDate)).toBeInTheDocument()
   })
 
@@ -248,24 +259,38 @@ describe("TransactionWorkspace", () => {
   it("refetches the summary when navigating months and returns with 今天", async () => {
     const user = userEvent.setup()
     renderWorkspace()
-    await screen.findByText("本月收入")
+    await screen.findByLabelText("记账日历")
     await user.click(screen.getByRole("button", { name: "下一月" }))
     await waitFor(() => expect(api.transactionSummary).toHaveBeenCalledWith(nextMonthKey))
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument()
     await user.click(screen.getByRole("button", { name: "今天" }))
     await waitFor(() => expect(api.transactionSummary).toHaveBeenCalledWith(monthKey))
   })
 
-  it("shows an empty trend state for a month without data", async () => {
+  it("shows one coordinated empty statistics state", async () => {
     vi.mocked(api.transactionSummary).mockResolvedValue({ ...summary, days: [], byCategory: [], incomeCents: 0, expenseCents: 0, netCents: 0, transactionCount: 0 })
-    renderWorkspace()
+    renderWorkspace(TransactionStatisticsWorkspace)
     expect(await screen.findByText(/本月暂无收支数据/)).toBeInTheDocument()
-    expect(screen.getByText(/本月暂无支出分类数据/)).toBeInTheDocument()
+    expect(screen.queryByText(/本月暂无支出分类数据/)).not.toBeInTheDocument()
   })
 
-  it("switches to the list tab and paginates through the server", async () => {
+  it("places statistics title and month navigation in the topbar with a compact summary", async () => {
     const user = userEvent.setup()
-    renderWorkspace()
-    await user.click(await screen.findByRole("tab", { name: "列表" }))
+    renderWorkspace(TransactionStatisticsWorkspace)
+    await screen.findByLabelText("本月收支汇总")
+    expect(screen.getByTestId("topbar-title")).toHaveTextContent("统计")
+    expect(screen.getByTestId("topbar-actions")).toHaveTextContent("今天")
+    expect(document.querySelectorAll(".statistics-summary-item")).toHaveLength(3)
+    expect(screen.getByText("共 3 笔")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "下一月" }))
+    await waitFor(() => expect(api.transactionSummary).toHaveBeenCalledWith(nextMonthKey))
+  })
+
+  it("renders the independent list route and paginates through the server", async () => {
+    const user = userEvent.setup()
+    renderWorkspace(TransactionListWorkspace)
+    expect(screen.getByTestId("topbar-title")).toHaveTextContent("流水")
+    expect(screen.getByRole("button", { name: "记一笔" })).toBeInTheDocument()
     expect(await screen.findByText("共 22 笔")).toBeInTheDocument()
     expect(api.transactions).toHaveBeenCalledWith({ month: monthKey, kind: "", category: "", accountId: "", page: 1, pageSize: 20 })
     expect(screen.getAllByText("+¥5,000.00").length).toBeGreaterThan(0)
@@ -273,8 +298,8 @@ describe("TransactionWorkspace", () => {
     await waitFor(() => expect(api.transactions).toHaveBeenCalledWith({ month: monthKey, kind: "", category: "", accountId: "", page: 2, pageSize: 20 }))
   })
 
-  it("renders the category share with 未分类 and excludes income-only categories", async () => {
-    renderWorkspace()
+  it("renders the statistics category share with 未分类 and excludes income-only categories", async () => {
+    renderWorkspace(TransactionStatisticsWorkspace)
     const share = await screen.findByLabelText("分类占比")
     expect(await within(share).findByText("餐饮")).toBeInTheDocument()
     expect(within(share).getByText("¥1,500.00 · 79%")).toBeInTheDocument()

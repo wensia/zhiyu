@@ -106,7 +106,7 @@ function MoneyAccountField({
         value={value}
       />
     </Field>
-    {empty && !allowEmpty ? <InlineNotice><span>请先新增可用于付款或收款的账户。</span><Button onClick={onManage} size="sm">前往账户管理</Button></InlineNotice> : null}
+    {empty && !allowEmpty ? <InlineNotice><span>请先新增可用于付款或收款的账户。</span><Button onClick={onManage} size="sm">前往账户</Button></InlineNotice> : null}
   </>
 }
 
@@ -125,7 +125,7 @@ function MetricStrip({ summary, loading }: { summary?: Summary; loading: boolean
     ["净额", summary?.netCents, ""],
     ["逾期", summary ? `${summary.overdueCount} 笔` : undefined, summary?.overdueCount ? "metric-warning" : ""],
   ]
-  return <section className="metrics" aria-label="债务汇总">{items.map(([label, value, className]) => <div className="metric" key={String(label)}><span>{label}</span><strong className={String(className)}>{loading ? "—" : typeof value === "number" ? yuan(value) : value}</strong></div>)}</section>
+  return <section className="metrics debt-summary" aria-label="债务汇总">{items.map(([label, value, className]) => <div className="debt-summary-item" key={String(label)}><span>{label}</span><strong className={String(className)}>{loading ? "—" : typeof value === "number" ? yuan(value) : value}</strong></div>)}</section>
 }
 
 export function DebtWorkspace() {
@@ -148,17 +148,19 @@ export function DebtWorkspace() {
   const refresh = async () => Promise.all([queryClient.invalidateQueries({ queryKey: ["debts"] }), queryClient.invalidateQueries({ queryKey: ["summary"] }), queryClient.invalidateQueries({ queryKey: ["counterparties"] }), queryClient.invalidateQueries({ queryKey: ["ledger-accounts"] })])
 
   return (
-    <main className="workspace">
-      <header className="page-header">
-        <div><p className="eyebrow">个人往来</p><h1>债务管理</h1></div>
-        <Button aria-label="新增债务" onClick={() => setCreateOpen(true)} variant="primary"><PlusIcon /><span className="button-label">新增债务</span></Button>
-      </header>
-      <MetricStrip loading={summaryQuery.isLoading} summary={summaryQuery.data} />
-      <TabsRoot className="workspace-tabs" value={view} onValueChange={setView}>
-        <TabsList aria-label="债务视图">
-          <TabsTrigger value="debts"><HandCoinsIcon /> 按债务</TabsTrigger>
-          <TabsTrigger value="contacts"><UsersIcon /> 按联系人</TabsTrigger>
-        </TabsList>
+    <main className="workspace debt-workspace">
+      <TabsRoot className="workspace-tabs debt-workspace-tabs" value={view} onValueChange={setView}>
+        <header className="debt-commandbar">
+          <div className="debt-commandbar-leading">
+            <h1>债务</h1>
+            <TabsList aria-label="债务查看方式">
+              <TabsTrigger value="debts"><HandCoinsIcon /> 按债务</TabsTrigger>
+              <TabsTrigger value="contacts"><UsersIcon /> 按联系人</TabsTrigger>
+            </TabsList>
+          </div>
+          <MetricStrip loading={summaryQuery.isLoading} summary={summaryQuery.data} />
+          <Button aria-label="新增债务" onClick={() => setCreateOpen(true)} variant="primary"><PlusIcon /><span className="button-label">新增债务</span></Button>
+        </header>
         <TabsContent className="tab-content" value="debts">
           <section className="toolbar" aria-label="债务筛选">
             <label className="search-box"><SearchIcon /><span className="sr-only">搜索</span><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜索联系人或备注" /></label>

@@ -5,6 +5,9 @@ use std::{
     path::Path,
 };
 
+#[cfg(debug_assertions)]
+use std::env;
+
 use anyhow::{Context, Result, anyhow, bail};
 use keyring::{Entry, Error as KeyringError};
 use reqwest::Url;
@@ -12,6 +15,10 @@ use serde::{Deserialize, Serialize};
 
 const KEYRING_SERVICE: &str = "app.zhiyu.desktop";
 const KEYRING_USER: &str = "backup-api-key";
+#[cfg(debug_assertions)]
+const DEV_SERVER_URL_ENV: &str = "ZHIYU_DESKTOP_URL";
+#[cfg(debug_assertions)]
+const DEV_API_KEY_FILE_ENV: &str = "ZHIYU_DESKTOP_API_KEY_FILE";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -67,6 +74,15 @@ pub fn load_config(path: &Path) -> Result<ConnectionConfig> {
 }
 
 pub fn resolve_connection(path: &Path) -> Result<ResolvedConnection> {
+    #[cfg(debug_assertions)]
+    if let Some(connection) = resolve_development_connection(path)? {
+        return Ok(connection);
+    }
+
+    resolve_saved_connection(path)
+}
+
+fn resolve_saved_connection(path: &Path) -> Result<ResolvedConnection> {
     let config = load_config(path)?;
     let server_url = validate_server_url(&config.server_url)?;
     if config.api_key_fallback.is_some() {
@@ -82,6 +98,37 @@ pub fn resolve_connection(path: &Path) -> Result<ResolvedConnection> {
         Ok(_) | Err(KeyringError::NoEntry) => fallback_connection(config, server_url, None),
         Err(error) => fallback_connection(config, server_url, Some(error.to_string())),
     }
+}
+
+#[cfg(debug_assertions)]
+fn resolve_development_connection(path: &Path) -> Result<Option<ResolvedConnection>> {
+    let server_url = match env::var(DEV_SERVER_URL_ENV) {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(None),
+        Err(env::VarError::NotUnicode(_)) => bail!("{DEV_SERVER_URL_ENV} 不是有效文本"),
+    };
+    let server_url = validate_server_url(&server_url)?;
+    let (api_key, credential_warning) = match env::var_os(DEV_API_KEY_FILE_ENV) {
+        Some(key_path) => {
+            let key_path = std::path::PathBuf::from(key_path);
+            let api_key = fs::read_to_string(&key_path)
+                .with_context(|| format!("无法读取开发 api-key 文件 {}", key_path.display()))?;
+            (api_key.trim().to_owned(), None)
+        }
+        None => {
+            let saved = resolve_saved_connection(path)
+                .context("无法读取已保存的服务器 api-key 供前端 dev 使用")?;
+            (saved.api_key, saved.credential_warning)
+        }
+    };
+    if api_key.is_empty() {
+        bail!("开发 api-key 不能为空");
+    }
+    Ok(Some(ResolvedConnection {
+        server_url,
+        api_key,
+        credential_warning,
+    }))
 }
 
 fn fallback_connection(

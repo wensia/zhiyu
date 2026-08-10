@@ -31,14 +31,12 @@ import {
   Input,
   Modal,
   Select,
+  Sheet,
   TablePagination,
-  TabsContent,
-  TabsList,
-  TabsRoot,
-  TabsTrigger,
   Textarea,
   useToast,
 } from "../components/ui"
+import { useTopbarSlots } from "../components/topbar-slots"
 import { formatDate, monthDays, parseDate, startOfMonth } from "../components/date-utils"
 
 const yuan = (cents: number) => new Intl.NumberFormat("zh-CN", { style: "currency", currency: "CNY" }).format(cents / 100)
@@ -80,13 +78,13 @@ function MetricStrip({ summary, loading }: { summary: TransactionMonthSummary | 
     ["本月收入", yuan(summary?.incomeCents ?? 0), "metric-positive"],
     ["本月支出", yuan(summary?.expenseCents ?? 0)],
     ["本月结余", `${summary && summary.netCents > 0 ? "+" : ""}${yuan(summary?.netCents ?? 0)}`, netClass],
-    ["记账笔数", String(summary?.transactionCount ?? 0)],
   ]
   return (
-    <section aria-label="本月收支汇总" className="metrics">
+    <section aria-label="本月收支汇总" className="statistics-summary">
       {items.map(([label, value, className]) => (
-        <div className="metric" key={label}><span>{label}</span><strong className={className}>{loading ? "—" : value}</strong></div>
+        <div className="statistics-summary-item" key={label}><span>{label}</span><strong className={className}>{loading ? "—" : value}</strong></div>
       ))}
+      <span className="statistics-summary-count">共 {loading ? "—" : summary?.transactionCount ?? 0} 笔</span>
     </section>
   )
 }
@@ -98,7 +96,6 @@ function CalendarDayCell({
   selected,
   today,
   onSelect,
-  onAdd,
 }: {
   date: Date
   bucket: DayBucket | undefined
@@ -106,10 +103,8 @@ function CalendarDayCell({
   selected: boolean
   today: boolean
   onSelect: (date: string) => void
-  onAdd: (date: string) => void
 }) {
   const dateValue = formatDate(date)
-  const net = (bucket?.income ?? 0) - (bucket?.expense ?? 0)
   const classNames = [
     "tx-day",
     currentMonth ? "" : "tx-day-other-month",
@@ -117,28 +112,22 @@ function CalendarDayCell({
   ].filter(Boolean).join(" ")
   return (
     <button
+      aria-current={today ? "date" : undefined}
       aria-label={`${dateValue}${bucket ? `，收入 ${yuan(bucket.income)}，支出 ${yuan(bucket.expense)}` : "，无记录"}`}
       aria-pressed={selected}
       className={classNames}
-      onClick={() => (selected ? onAdd(dateValue) : onSelect(dateValue))}
+      onClick={() => onSelect(dateValue)}
       type="button"
     >
-      <span className={`tx-day-number ${today ? "tx-day-today" : ""}`}>{date.getDate()}</span>
+      <span className={`tx-day-number ${today ? "tx-day-today" : ""}`} data-center-content>
+        <span data-center-ink>{date.getDate()}</span>
+      </span>
       {bucket ? (
         <span className="tx-day-amounts">
           {bucket.income > 0 ? <span className="tx-amount-income">+{compactYuan(bucket.income)}</span> : null}
           {bucket.expense > 0 ? <span className="tx-amount-expense">-{compactYuan(bucket.expense)}</span> : null}
-          <span className={net >= 0 ? "tx-amount-net-positive" : "tx-amount-net-negative"}>{net >= 0 ? "+" : ""}{compactYuan(net)}</span>
         </span>
       ) : null}
-      <span
-        aria-label={`在 ${dateValue} 记一笔`}
-        className="tx-day-add"
-        onClick={(event) => { event.stopPropagation(); onAdd(dateValue) }}
-        onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.stopPropagation(); onAdd(dateValue) } }}
-        role="button"
-        tabIndex={-1}
-      ><PlusIcon /></span>
     </button>
   )
 }
@@ -147,29 +136,17 @@ function TransactionCalendar({
   month,
   selectedDay,
   buckets,
-  onMonthChange,
   onSelect,
-  onAdd,
 }: {
   month: Date
   selectedDay: string
   buckets: Map<string, DayBucket>
-  onMonthChange: (month: Date) => void
   onSelect: (date: string) => void
-  onAdd: (date: string) => void
 }) {
   const days = useMemo(() => monthDays(month), [month])
   const today = formatDate(new Date())
   return (
     <section aria-label="记账日历" className="tx-calendar">
-      <div className="tx-calendar-header">
-        <Button aria-label="上一月" onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() - 1, 1))} size="icon-sm" variant="ghost"><ChevronLeftIcon /></Button>
-        <strong className="tx-calendar-title">{month.getFullYear()} 年 {month.getMonth() + 1} 月</strong>
-        <div className="tx-calendar-header-side">
-          <Button onClick={() => onMonthChange(startOfMonth(new Date()))} size="sm" variant="ghost">今天</Button>
-          <Button aria-label="下一月" onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() + 1, 1))} size="icon-sm" variant="ghost"><ChevronRightIcon /></Button>
-        </div>
-      </div>
       <div className="tx-calendar-weekdays">{WEEKDAYS.map((day) => <span key={day}>{day}</span>)}</div>
       <div className="tx-calendar-grid" role="grid">
         {days.map((date) => (
@@ -178,7 +155,6 @@ function TransactionCalendar({
             currentMonth={date.getMonth() === month.getMonth()}
             date={date}
             key={formatDate(date)}
-            onAdd={onAdd}
             onSelect={onSelect}
             selected={formatDate(date) === selectedDay}
             today={formatDate(date) === today}
@@ -186,6 +162,16 @@ function TransactionCalendar({
         ))}
       </div>
     </section>
+  )
+}
+
+function MonthControls({ month, onMonthChange }: { month: Date; onMonthChange: (month: Date) => void }) {
+  return (
+    <div aria-label={`${month.getFullYear()} 年 ${month.getMonth() + 1} 月`} className="topbar-month-controls" role="group">
+      <Button aria-label="上一月" onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() - 1, 1))} size="icon" title="上一月" variant="outline"><ChevronLeftIcon /></Button>
+      <strong>{month.getFullYear()} 年 {month.getMonth() + 1} 月</strong>
+      <Button aria-label="下一月" onClick={() => onMonthChange(new Date(month.getFullYear(), month.getMonth() + 1, 1))} size="icon" title="下一月" variant="outline"><ChevronRightIcon /></Button>
+    </div>
   )
 }
 
@@ -586,12 +572,13 @@ function TransactionFormModal({
   )
 }
 
-export function TransactionWorkspace() {
+function TransactionWorkspaceBase({ page }: { page: "calendar" | "transactions" | "statistics" }) {
   const queryClient = useQueryClient()
   const toast = useToast()
+  const setTopbarSlots = useTopbarSlots()
   const today = formatDate(new Date())
   const [month, setMonth] = useState(() => startOfMonth(new Date()))
-  const [selectedDay, setSelectedDay] = useState(today)
+  const [detailDay, setDetailDay] = useState<string | undefined>()
   const [formState, setFormState] = useState<{ transaction?: LedgerTransaction; date: string } | undefined>()
   const [deleting, setDeleting] = useState<LedgerTransaction | undefined>()
   const monthKey = monthKeyOf(month)
@@ -649,68 +636,51 @@ export function TransactionWorkspace() {
   const changeMonth = (next: Date) => {
     const start = startOfMonth(next)
     setMonth(start)
-    setSelectedDay(monthKeyOf(start) === monthKeyOf(new Date()) ? formatDate(new Date()) : formatDate(start))
+    setDetailDay(undefined)
   }
 
   const buckets = useMemo(() => bucketByDate(summaryQuery.data?.days), [summaryQuery.data])
   const dayItems = useMemo(
-    () => (monthItemsQuery.data?.items || []).filter((item) => item.occurredOn === selectedDay),
-    [monthItemsQuery.data, selectedDay],
+    () => (monthItemsQuery.data?.items || []).filter((item) => item.occurredOn === detailDay),
+    [monthItemsQuery.data, detailDay],
   )
   const accounts = accountsQuery.data || []
   const categories = categoriesQuery.data || []
+  const openForm = (state: { transaction?: LedgerTransaction; date: string }) => {
+    setDetailDay(undefined)
+    setFormState(state)
+  }
+  useEffect(() => {
+    setTopbarSlots({
+      edge: page === "calendar",
+      title: page === "calendar" ? "日历" : page === "transactions" ? "流水" : "统计",
+      actions: page === "transactions" ? <Button aria-label="记一笔" onClick={() => openForm({ date: today })} variant="primary"><PlusIcon /><span className="button-label">记一笔</span></Button> : <>
+        <MonthControls month={month} onMonthChange={changeMonth} />
+        <Button onClick={() => changeMonth(startOfMonth(new Date()))} variant="outline">今天</Button>
+        {page === "calendar" ? <Button aria-label="记一笔" onClick={() => openForm({ date: detailDay || today })} variant="primary"><PlusIcon /><span className="button-label">记一笔</span></Button> : null}
+      </>,
+    })
+    return () => setTopbarSlots(undefined)
+  }, [month, page, detailDay, setTopbarSlots, today])
 
   return (
-    <main className="workspace transaction-workspace">
-      <header className="page-header">
-        <div><p className="eyebrow">收支流水</p><h1>记账</h1><p>点日历格子选中日期，再点一次或点 + 记一笔。</p></div>
-        <Button aria-label="记一笔" onClick={() => setFormState({ date: selectedDay })} variant="primary"><PlusIcon /><span className="button-label">记一笔</span></Button>
-      </header>
-      <MetricStrip loading={summaryQuery.isLoading} summary={summaryQuery.data} />
-      {summaryQuery.error ? <InlineNotice type="error">{summaryQuery.error.message}<Button onClick={() => summaryQuery.refetch()} size="sm">重试</Button></InlineNotice> : null}
-      <TabsRoot className="workspace-tabs" defaultValue="calendar">
-        <TabsList>
-          <TabsTrigger value="calendar">日历</TabsTrigger>
-          <TabsTrigger value="list">列表</TabsTrigger>
-        </TabsList>
-        <TabsContent className="tab-content" value="calendar">
-          <div className="tx-layout">
-            <TransactionCalendar
-              buckets={buckets}
-              month={month}
-              onAdd={(date) => setFormState({ date })}
-              onMonthChange={changeMonth}
-              onSelect={setSelectedDay}
-              selectedDay={selectedDay}
-            />
-            <aside className="tx-side">
-              <DayDetailPanel
-                day={selectedDay}
-                items={dayItems}
-                loading={monthItemsQuery.isLoading}
-                onAdd={(date) => setFormState({ date })}
-                onDelete={setDeleting}
-                onEdit={(transaction) => setFormState({ transaction, date: transaction.occurredOn })}
-              />
-              <TrendChart days={summaryQuery.data?.days || []} month={month} />
-              <CategoryShare summary={summaryQuery.data} />
-            </aside>
-          </div>
-        </TabsContent>
-        <TabsContent className="tab-content" value="list">
-          <TransactionListTab
-            accounts={accounts}
-            categories={categories}
-            monthKey={monthKey}
-            onDelete={setDeleting}
-            onEdit={(transaction) => setFormState({ transaction, date: transaction.occurredOn })}
-          />
-        </TabsContent>
-      </TabsRoot>
+    <main className={`workspace transaction-workspace transaction-workspace-${page}`}>
+      {page === "calendar" ? <>
+        {summaryQuery.error ? <div className="calendar-state"><InlineNotice type="error">{summaryQuery.error.message}<Button onClick={() => summaryQuery.refetch()} size="sm">重试</Button></InlineNotice></div> : null}
+        <TransactionCalendar buckets={buckets} month={month} onSelect={setDetailDay} selectedDay={detailDay || ""} />
+        <Sheet onOpenChange={() => setDetailDay(undefined)} open={Boolean(detailDay)} title={detailDay ? `${detailDay} 当日流水` : "当日流水"}>
+          <DayDetailPanel day={detailDay || today} items={dayItems} loading={monthItemsQuery.isLoading} onAdd={(date) => openForm({ date })} onDelete={(transaction) => { setDeleting(transaction); setDetailDay(undefined) }} onEdit={(transaction) => openForm({ transaction, date: transaction.occurredOn })} />
+        </Sheet>
+      </> : null}
+      {page === "transactions" ? <TransactionListTab accounts={accounts} categories={categories} monthKey={monthKeyOf(new Date())} onDelete={setDeleting} onEdit={(transaction) => openForm({ transaction, date: transaction.occurredOn })} /> : null}
+      {page === "statistics" ? <>
+        {summaryQuery.error ? <InlineNotice type="error">{summaryQuery.error.message}<Button onClick={() => summaryQuery.refetch()} size="sm">重试</Button></InlineNotice> : null}
+        {summaryQuery.isLoading ? <div className="statistics-empty" aria-busy="true">正在加载统计…</div> : !summaryQuery.data?.transactionCount ? <div className="statistics-empty"><p>本月暂无收支数据</p><p>记一笔后即可查看收支汇总、趋势和分类。</p></div> : <><MetricStrip loading={false} summary={summaryQuery.data} /><div className="statistics-layout"><TrendChart days={summaryQuery.data.days} month={month} /><CategoryShare summary={summaryQuery.data} /></div></>}
+      </> : null}
       <TransactionFormModal
         accounts={accounts}
         categories={categories}
-        defaultDate={formState?.date || selectedDay}
+        defaultDate={formState?.date || detailDay || today}
         onOpenChange={(open) => !open && setFormState(undefined)}
         onSaved={refresh}
         open={Boolean(formState)}
@@ -728,3 +698,9 @@ export function TransactionWorkspace() {
     </main>
   )
 }
+
+export function CalendarWorkspace() { return <TransactionWorkspaceBase page="calendar" /> }
+export function TransactionWorkspace() { return <TransactionWorkspaceBase page="transactions" /> }
+export function StatisticsWorkspace() { return <TransactionWorkspaceBase page="statistics" /> }
+export const TransactionListWorkspace = TransactionWorkspace
+export const TransactionStatisticsWorkspace = StatisticsWorkspace

@@ -66,13 +66,13 @@ async function registerVerifyLogin(page: Page, email: string) {
   await page.getByLabel("密码", { exact: true }).fill(password)
   await page.getByRole("button", { name: "登录" }).click()
   await expect(page).toHaveURL(/\/app\/debts/)
-  await expect(page.getByRole("heading", { name: "债务管理" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "债务" })).toBeVisible()
 }
 
 async function configureLedgerAccount(page: Page, name: string, accountType: (typeof ledgerAccountTypeLabels)[number] = "微信零钱") {
-  await page.getByRole("link", { name: /账户管理/ }).click()
+  await page.getByRole("link", { name: /账户/ }).click()
   await expect(page).toHaveURL(/\/app\/accounts$/)
-  await expect(page.getByRole("heading", { name: "账户管理" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "账户" })).toBeVisible()
   await page.getByRole("button", { name: "新增账户" }).click()
   const dialog = page.getByRole("dialog", { name: "新增账户" })
   await dialog.getByRole("combobox", { name: "账户类型" }).click()
@@ -88,7 +88,7 @@ async function configureLedgerAccount(page: Page, name: string, accountType: (ty
   const accountRow = page.getByRole("row", { name: new RegExp(name) })
   await expect(accountRow.getByText(accountType, { exact: true })).toBeVisible()
   await expect(accountRow.getByText(name, { exact: true })).toBeVisible()
-  await page.getByRole("link", { name: /债务管理/ }).click()
+  await page.getByRole("link", { name: /债务/ }).click()
   await expect(page).toHaveURL(/\/app\/debts$/)
 }
 
@@ -120,7 +120,7 @@ test("registration, ledger events, reversal and account isolation", async ({ pag
   await registerVerifyLogin(page, `first-${suffix}@example.com`)
   await configureLedgerAccount(page, "微信支付-测试号")
 
-  await page.getByRole("button", { name: /新增债务/ }).click()
+  await page.getByRole("button", { name: "新增债务" }).click()
   const borrowDialog = page.getByRole("dialog", { name: "新增债务" })
   await borrowDialog.getByLabel("联系人").fill("阿青")
   await borrowDialog.getByLabel("本金（元）").fill("1000")
@@ -137,7 +137,7 @@ test("registration, ledger events, reversal and account isolation", async ({ pag
   await expect(borrowRow.getByText("已还", { exact: true })).toBeVisible()
   await expect(borrowRow.getByText("剩余", { exact: true })).toBeVisible()
 
-  await page.getByRole("button", { name: /新增债务/ }).click()
+  await page.getByRole("button", { name: "新增债务" }).click()
   const lendDialog = page.getByRole("dialog", { name: "新增债务" })
   await lendDialog.getByRole("button", { name: "借出（别人欠我）" }).click()
   await lendDialog.getByLabel("联系人").fill("阿岚")
@@ -250,7 +250,7 @@ test("cashless debt skips the money account end to end", async ({ page }, testIn
   await registerVerifyLogin(page, `cashless-${suffix}@example.com`)
   await configureLedgerAccount(page, "微信支付-测试号")
 
-  await page.getByRole("button", { name: /新增债务/ }).click()
+  await page.getByRole("button", { name: "新增债务" }).click()
   const createDialog = page.getByRole("dialog", { name: "新增债务" })
   await createDialog.getByRole("button", { name: "赊账·无资金进出" }).click()
   await expect(createDialog.getByRole("combobox", { name: "收款账户" })).toHaveCount(0)
@@ -283,7 +283,7 @@ test("long debt history scrolls independently from the debt summary", async ({ p
   await registerVerifyLogin(page, `scroll-${suffix}@example.com`)
   await configureLedgerAccount(page, "微信支付-测试号")
 
-  await page.getByRole("button", { name: /新增债务/ }).click()
+  await page.getByRole("button", { name: "新增债务" }).click()
   const createDialog = page.getByRole("dialog", { name: "新增债务" })
   await createDialog.getByLabel("联系人").fill("滚动验收")
   await createDialog.getByLabel("本金（元）").fill("1000")
@@ -309,7 +309,7 @@ test("long debt history scrolls independently from the debt summary", async ({ p
 test("date picker keeps a stable height and selects a distant leap day", async ({ page }) => {
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
   await registerVerifyLogin(page, `date-picker-${suffix}@example.com`)
-  await page.getByRole("button", { name: /新增债务/ }).click()
+  await page.getByRole("button", { name: "新增债务" }).click()
 
   const trigger = page.getByLabel("发生日期")
   await trigger.click()

@@ -2,7 +2,7 @@
   "name": "@zhiyu/desktop",
   "private": true,
   "scripts": {
-    "dev": "pnpm --dir ../web build && cargo tauri dev --config src-tauri/tauri.conf.json",
+    "dev": "pnpm --dir ../.. tauri dev",
     "build": "pnpm --dir ../web build && cargo tauri build --config src-tauri/tauri.conf.json"
   }
 }

@@ -64,7 +64,7 @@ fn window_chrome_script(server_url: &Url) -> Result<String> {
     Ok(format!(
         r##"(function () {{
   if (location.origin !== {origin}) return;
-  var css = ".sidebar{{padding-top:34px}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}.sidebar-logout{{display:none}}.topbar,.sidebar-header{{user-select:none}}.sidebar-window-reset{{width:32px;height:var(--nav-item-height);margin-top:auto;margin-left:auto;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:var(--radius-control);color:var(--sidebar-foreground);background:transparent;font:inherit;cursor:pointer}}.sidebar-window-reset:hover:not(:disabled){{background:var(--sidebar-accent)}}.sidebar-window-reset svg{{width:18px;height:18px;flex:0 0 18px}}.app-shell[data-sidebar='collapsed'] .sidebar-window-reset{{margin-right:auto}}";
+  var css = ".sidebar{{height:calc(100svh - 34px);margin-top:34px;padding-top:0}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}.sidebar-logout{{display:none}}.topbar,.sidebar-header{{user-select:none}}.sidebar-window-reset{{width:32px;height:var(--nav-item-height);margin-top:auto;margin-left:auto;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:var(--radius-control);color:var(--sidebar-foreground);background:transparent;font:inherit;cursor:pointer}}.sidebar-window-reset:hover:not(:disabled){{background:var(--sidebar-accent)}}.sidebar-window-reset svg{{width:18px;height:18px;flex:0 0 18px}}.app-shell[data-sidebar='collapsed'] .sidebar-window-reset{{margin-right:auto}}";
   function markDragRegions() {{
     document.querySelectorAll(".topbar,.sidebar-header").forEach(function (element) {{
       element.setAttribute("data-tauri-drag-region", "");
@@ -137,14 +137,43 @@ fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         window.set_focus()?;
         return Ok(());
     }
-    WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("连接设置")
-        // 按 kiln 密度重排后内容约 590px 高；给足余量让提示与降级警告同时出现时
-        // 也不触发滚动——上一版正是内容撑破窗口，用户看到的是被截断的半行标题。
-        .inner_size(560.0, 660.0)
-        .min_inner_size(480.0, 560.0)
-        .resizable(true)
-        .build()?;
+    let mut builder =
+        WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
+            .title("连接设置")
+            .min_inner_size(820.0, 480.0)
+            .resizable(true);
+
+    // 相对主窗口定尺寸与位置。固定像素在不同大小的主界面上会忽大忽小，而系统默认
+    // 位置会把窗口放在屏幕偏上、离主界面很远的地方——这两点作者都实际反馈过。
+    //
+    // 设置内容采用横向双列：左侧连接表单，右侧备份状态。窗口继续相对主窗口定尺寸
+    // 与位置，并用上下限保证分屏和小显示器上仍有安全边距。
+    match app.get_webview_window("main") {
+        Some(main) => {
+            let scale = main.scale_factor().unwrap_or(1.0);
+            let outer = main.outer_size().map(|size| size.to_logical::<f64>(scale));
+            let origin = main
+                .outer_position()
+                .map(|position| position.to_logical::<f64>(scale));
+            match (outer, origin) {
+                (Ok(outer), Ok(origin)) => {
+                    let width = (outer.width * 0.72).clamp(820.0, 1000.0);
+                    let height = (outer.height * 0.59).clamp(480.0, 560.0);
+                    builder = builder.inner_size(width, height).position(
+                        origin.x + (outer.width - width) / 2.0,
+                        origin.y + (outer.height - height) / 2.0,
+                    );
+                }
+                _ => builder = builder.inner_size(920.0, 500.0).center(),
+            }
+            // 附属于主窗口：设置窗口不应沉到主界面背后，否则用户以为它消失了。
+            builder = builder.parent(&main)?;
+        }
+        // 首次启动尚无主窗口（还没配置连接），此时屏幕居中是唯一合理的落点。
+        None => builder = builder.inner_size(920.0, 500.0).center(),
+    }
+
+    builder.build()?;
     Ok(())
 }
 
@@ -280,6 +309,13 @@ fn confirm_new_session_cookie(
         "desktop session cookie readback completed"
     );
     if !found {
+        #[cfg(debug_assertions)]
+        if server_url.host_str() == Some("127.0.0.1")
+            && std::env::var_os("ZHIYU_DESKTOP_URL").is_some()
+        {
+            tracing::warn!("allowing loopback dev navigation after WKWebView cookie readback lag");
+            return Ok(());
+        }
         bail!("交接响应未写入新的会话 cookie；已阻止加载邮箱登录页");
     }
     Ok(())
@@ -730,6 +766,22 @@ mod tests {
     }
 
     #[test]
+    fn settings_window_uses_horizontal_layout_and_single_password_icon() {
+        let html = include_str!("../../placeholder/settings.html");
+        let css = include_str!("../../placeholder/settings.css");
+        let script = include_str!("../../placeholder/settings.js");
+
+        assert!(html.contains("class=\"settings-grid\""));
+        assert_eq!(html.matches("<svg").count(), 1);
+        assert!(html.contains("id=\"key-visibility-icon\""));
+        assert!(!html.contains("id=\"icon-hide\""));
+        assert!(css.contains("grid-template-columns: minmax(0, 1.65fr)"));
+        assert!(script.contains("EYE_ICON"));
+        assert!(script.contains("EYE_OFF_ICON"));
+        assert!(!script.contains("iconHide.hidden"));
+    }
+
+    #[test]
     fn handoff_script_contains_ticket_only_behind_local_page_check() {
         let ticket = HandoffTicket {
             server_url: "https://zhiyu.example.com".parse().unwrap(),
@@ -747,6 +799,10 @@ mod tests {
         );
         let chrome_script = window_chrome_script(&ticket.server_url).unwrap();
         assert!(chrome_script.contains("location.origin !== \"https://zhiyu.example.com\""));
+        assert!(
+            chrome_script
+                .contains(".sidebar{height:calc(100svh - 34px);margin-top:34px;padding-top:0}")
+        );
         assert!(chrome_script.contains(".sidebar-logout{display:none}"));
         assert!(chrome_script.contains("data-tauri-drag-region"));
         assert!(chrome_script.contains("reset_main_window"));

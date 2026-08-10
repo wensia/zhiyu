@@ -5,8 +5,7 @@ const serverUrl = document.querySelector("#server-url");
 const apiKey = document.querySelector("#api-key");
 const apiKeyHint = document.querySelector("#api-key-hint");
 const toggleKey = document.querySelector("#toggle-key");
-const iconShow = document.querySelector("#icon-show");
-const iconHide = document.querySelector("#icon-hide");
+const visibilityIcon = document.querySelector("#key-visibility-icon");
 const saveButton = document.querySelector("#save-button");
 const saveResult = document.querySelector("#save-result");
 const credentialWarning = document.querySelector("#credential-warning");
@@ -16,6 +15,8 @@ const snapshotCount = document.querySelector("#snapshot-count");
 const lastError = document.querySelector("#last-error");
 
 const SUBMIT_LABEL = "测试连接并保存";
+const EYE_ICON = '<path d="M2.062 12.348a1 1 0 0 1 0-.696 10.75 10.75 0 0 1 19.876 0 1 1 0 0 1 0 .696 10.75 10.75 0 0 1-19.876 0"></path><circle cx="12" cy="12" r="3"></circle>';
+const EYE_OFF_ICON = '<path d="M10.733 5.076a10.744 10.744 0 0 1 11.205 6.575 1 1 0 0 1 0 .696 10.747 10.747 0 0 1-1.444 2.49"></path><path d="M14.084 14.158a3 3 0 0 1-4.242-4.242"></path><path d="M17.479 17.499a10.75 10.75 0 0 1-15.417-5.151 1 1 0 0 1 0-.696 10.75 10.75 0 0 1 4.446-5.143"></path><path d="m2 2 20 20"></path>';
 
 function formatTime(value) {
   if (!value) return null;
@@ -82,8 +83,7 @@ async function refresh() {
 toggleKey.addEventListener("click", () => {
   const revealed = apiKey.type === "text";
   apiKey.type = revealed ? "password" : "text";
-  iconShow.hidden = !revealed;
-  iconHide.hidden = revealed;
+  visibilityIcon.innerHTML = revealed ? EYE_ICON : EYE_OFF_ICON;
   toggleKey.setAttribute("aria-label", revealed ? "显示 api-key" : "隐藏 api-key");
   apiKey.focus();
 });

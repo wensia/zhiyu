@@ -7,3 +7,8 @@ commands.allow = ["get_backup_settings"]
 identifier = "allow-save-backup-settings"
 description = "允许本地设置页试连并保存备份配置。"
 commands.allow = ["save_backup_settings"]
+
+[[permission]]
+identifier = "allow-reset-main-window"
+description = "允许远程主窗口恢复默认尺寸并在屏幕居中。"
+commands.allow = ["reset_main_window"]

@@ -373,7 +373,7 @@ export function AccountWorkspace() {
   return (
     <main className="workspace account-workspace">
       <header className="page-header">
-        <div><p className="eyebrow">资金溯源</p><h1>账户管理</h1><p>配置付款与收款账户，让每一笔资金往来都有明确去向。</p></div>
+        <div><p className="eyebrow">资金溯源</p><h1>账户</h1><p>配置付款与收款账户，让每一笔资金往来都有明确去向。</p></div>
         <Button aria-label="新增账户" onClick={() => setCreateOpen(true)} variant="primary"><PlusIcon /><span className="button-label">新增账户</span></Button>
       </header>
       <section aria-label="账户筛选" className="toolbar account-toolbar">
