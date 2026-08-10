@@ -44,6 +44,7 @@ impl TestApp {
             turso_auth_token: None,
             dev_mail_dir: root.path().join("mail"),
             web_dist_dir: root.path().join("web"),
+            bill_inbox: None,
         };
         let database = db::connect(&config).await.unwrap();
         let state = AppState {
@@ -150,6 +151,28 @@ impl TestApp {
         assert_eq!(account["accountType"], account_type);
         account
     }
+}
+
+#[tokio::test]
+async fn malformed_bill_inbox_query_uses_the_json_error_contract() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("bill-query@example.com").await;
+    let (status, headers, body) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/bill-inbox/messages?limit=abc",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["code"], "invalid_query");
+    assert_eq!(
+        headers.get(header::CONTENT_TYPE).unwrap().to_str().unwrap(),
+        "application/json"
+    );
 }
 
 #[tokio::test]
@@ -886,7 +909,7 @@ async fn api_key_lists_and_downloads_verified_backup() {
     // 服务端漏掉这个属性时两边解析不上，而各自的单测都会照样通过——所以这里既断言
     // camelCase 存在，也断言 snake_case 不存在，把跨端契约钉死在服务端这一侧。
     assert_eq!(list[0]["createdAt"], "2026-08-10T02:03:04Z");
-    assert_eq!(list[0]["schemaVersion"], 11);
+    assert_eq!(list[0]["schemaVersion"], 12);
     assert!(list[0].get("created_at").is_none());
     assert!(list[0].get("schema_version").is_none());
 

@@ -20,6 +20,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/handoff-tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_handoff_ticket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -188,6 +204,38 @@ export interface paths {
             cookie?: never;
         };
         get: operations["download_backup"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bill-inbox/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_messages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/bill-inbox/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["status"];
         put?: never;
         post?: never;
         delete?: never;
@@ -556,6 +604,46 @@ export interface components {
             latestSnapshotId?: string | null;
             running: boolean;
         };
+        BillInboxAttachmentView: {
+            mediaType: string;
+            name?: string | null;
+            /** Format: int64 */
+            sizeBytes: number;
+        };
+        BillInboxMessageList: {
+            items: components["schemas"]["BillInboxMessageView"][];
+            nextCursor?: string | null;
+            /** Format: int64 */
+            total: number;
+        };
+        BillInboxMessageView: {
+            attachments: components["schemas"]["BillInboxAttachmentView"][];
+            errorCode?: string | null;
+            fromEmail?: string | null;
+            fromName?: string | null;
+            id: string;
+            messageIdHeader?: string | null;
+            rawAvailable: boolean;
+            receivedAt: string;
+            /** Format: int64 */
+            sizeBytes: number;
+            sourceDeletedAt?: string | null;
+            status: string;
+            subject?: string | null;
+        };
+        BillInboxStatus: {
+            address: string;
+            emailState?: string | null;
+            /** Format: int64 */
+            errorCount: number;
+            jmapAccountId?: string | null;
+            lastAttemptAt?: string | null;
+            lastErrorAt?: string | null;
+            lastErrorCode?: string | null;
+            lastSuccessAt?: string | null;
+            /** Format: int64 */
+            pendingCount: number;
+        };
         CounterpartyBrief: {
             displayName: string;
             id: string;
@@ -697,6 +785,9 @@ export interface components {
             fieldErrors?: unknown;
             message: string;
             requestId: string;
+        };
+        HandoffTicketResponse: {
+            ticket: string;
         };
         LedgerAccountBrief: {
             accountType: components["schemas"]["AccountType"];
@@ -933,6 +1024,33 @@ export interface operations {
             };
         };
     };
+    create_handoff_ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoffTicketResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     login: {
         parameters: {
             query?: never;
@@ -1154,6 +1272,14 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorBody"];
                 };
             };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
         };
     };
     backup_status: {
@@ -1174,6 +1300,14 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -1211,6 +1345,113 @@ export interface operations {
                 };
             };
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_messages: {
+        parameters: {
+            query?: {
+                /** @description 上一页返回的不透明游标。 */
+                cursor?: string;
+                /** @description 每页条数，默认 50，最大 100。 */
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillInboxMessageList"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BillInboxStatus"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

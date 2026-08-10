@@ -22,6 +22,7 @@ async fn turso_remote_readiness_smoke() {
         turso_auth_token: Some(token),
         dev_mail_dir: PathBuf::from("./var/dev-mail"),
         web_dist_dir: PathBuf::from("./apps/web/dist"),
+        bill_inbox: None,
     };
     let database = db::connect(&config).await.unwrap();
     let conn = database.connect().unwrap();
