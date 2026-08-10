@@ -10,7 +10,8 @@ use std::{
 use anyhow::{Context, Result, anyhow, bail};
 use backup_client::{BackupClient, HandoffTicket, get_backup_settings, save_backup_settings};
 use tauri::{
-    AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, LogicalSize, Manager, PhysicalPosition, PhysicalSize, Url, WebviewUrl,
+    WebviewWindow, WebviewWindowBuilder,
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
 };
 use tracing_subscriber::EnvFilter;
@@ -19,23 +20,108 @@ const SETTINGS_MENU_ID: &str = "connection-settings";
 const DISCONNECT_MENU_ID: &str = "disconnect-server";
 const SESSION_COOKIE_NAMES: [&str; 2] = ["__Host-zhiyu_session", "zhiyu_session"];
 const HANDOFF_PAGE_TIMEOUT: Duration = Duration::from_secs(20);
+const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
+const DEFAULT_WINDOW_HEIGHT: f64 = 840.0;
+
+fn centered_position(
+    work_area_position: PhysicalPosition<i32>,
+    work_area_size: PhysicalSize<u32>,
+    window_size: PhysicalSize<u32>,
+) -> PhysicalPosition<i32> {
+    let centered_axis = |origin: i32, available: u32, window: u32| {
+        let offset = (i64::from(available) - i64::from(window)).max(0) / 2;
+        origin.saturating_add(offset.min(i64::from(i32::MAX)) as i32)
+    };
+    PhysicalPosition::new(
+        centered_axis(
+            work_area_position.x,
+            work_area_size.width,
+            window_size.width,
+        ),
+        centered_axis(
+            work_area_position.y,
+            work_area_size.height,
+            window_size.height,
+        ),
+    )
+}
+
+fn center_window_in_current_display(window: &WebviewWindow) -> Result<()> {
+    let monitor = match window.current_monitor()? {
+        Some(monitor) => monitor,
+        None => window
+            .primary_monitor()?
+            .context("找不到可用于居中窗口的显示器")?,
+    };
+    let work_area = monitor.work_area();
+    let position = centered_position(work_area.position, work_area.size, window.outer_size()?);
+    window.set_position(position)?;
+    Ok(())
+}
+
 fn window_chrome_script(server_url: &Url) -> Result<String> {
     let origin = serde_json::to_string(&server_url.origin().ascii_serialization())?;
     Ok(format!(
         r##"(function () {{
   if (location.origin !== {origin}) return;
-  var css = ".sidebar{{padding-top:34px}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}.sidebar-logout{{display:none}}";
+  var css = ".sidebar{{padding-top:34px}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}.sidebar-logout{{display:none}}.topbar,.sidebar-header{{user-select:none}}.sidebar-window-reset{{width:32px;height:var(--nav-item-height);margin-top:auto;margin-left:auto;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:var(--radius-control);color:var(--sidebar-foreground);background:transparent;font:inherit;cursor:pointer}}.sidebar-window-reset:hover:not(:disabled){{background:var(--sidebar-accent)}}.sidebar-window-reset svg{{width:18px;height:18px;flex:0 0 18px}}.app-shell[data-sidebar='collapsed'] .sidebar-window-reset{{margin-right:auto}}";
+  function markDragRegions() {{
+    document.querySelectorAll(".topbar,.sidebar-header").forEach(function (element) {{
+      element.setAttribute("data-tauri-drag-region", "");
+      element.setAttribute("title", "拖动以移动窗口");
+    }});
+  }}
+  function ensureWindowReset() {{
+    if (document.querySelector(".sidebar-window-reset")) return;
+    var logout = document.querySelector(".sidebar-logout");
+    if (!logout || !logout.parentElement) return;
+    var button = document.createElement("button");
+    button.type = "button";
+    button.className = "sidebar-window-reset";
+    button.setAttribute("aria-label", "还原窗口大小并居中");
+    button.title = "还原窗口大小并居中";
+    button.innerHTML = '<svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/></svg>';
+    button.addEventListener("click", function () {{
+      button.disabled = true;
+      window.__TAURI_INTERNALS__.invoke("reset_main_window").catch(function (error) {{
+        console.error("还原窗口失败", error);
+      }}).finally(function () {{ button.disabled = false; }});
+    }});
+    logout.parentElement.insertBefore(button, logout);
+  }}
   function inject() {{
     if (document.getElementById("zhiyu-desktop-chrome")) return;
     var style = document.createElement("style");
     style.id = "zhiyu-desktop-chrome";
     style.textContent = css;
     document.head.appendChild(style);
+    markDragRegions();
+    ensureWindowReset();
+    new MutationObserver(function () {{ markDragRegions(); ensureWindowReset(); }}).observe(document.documentElement, {{ childList: true, subtree: true }});
   }}
   if (document.head) inject();
   else document.addEventListener("DOMContentLoaded", inject);
 }})();"##
     ))
+}
+
+#[tauri::command]
+fn reset_main_window(window: WebviewWindow) -> Result<(), String> {
+    if window.label() != "main" {
+        return Err("只有主窗口可以执行还原操作".to_owned());
+    }
+    window
+        .set_fullscreen(false)
+        .map_err(|error| error.to_string())?;
+    window.unmaximize().map_err(|error| error.to_string())?;
+    window
+        .set_size(LogicalSize::new(
+            DEFAULT_WINDOW_WIDTH,
+            DEFAULT_WINDOW_HEIGHT,
+        ))
+        .map_err(|error| error.to_string())?;
+    center_window_in_current_display(&window).map_err(|error| format!("{error:#}"))?;
+    Ok(())
 }
 
 #[derive(Default)]
@@ -53,8 +139,10 @@ fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     }
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
         .title("连接设置")
-        .inner_size(640.0, 720.0)
-        .min_inner_size(560.0, 620.0)
+        // 按 kiln 密度重排后内容约 590px 高；给足余量让提示与降级警告同时出现时
+        // 也不触发滚动——上一版正是内容撑破窗口，用户看到的是被截断的半行标题。
+        .inner_size(560.0, 660.0)
+        .min_inner_size(480.0, 560.0)
         .resizable(true)
         .build()?;
     Ok(())
@@ -303,6 +391,7 @@ fn show_handoff_error(app: &AppHandle, reason: &str) -> Result<()> {
             true
         })
         .build()?;
+    center_window_in_current_display(&window)?;
     window.show()?;
     Ok(())
 }
@@ -435,6 +524,7 @@ fn open_handoff_window(
             }
         })
         .build()?;
+    center_window_in_current_display(&window)?;
 
     let previous_session_cookies = session_cookies_for_url(&window, &server_url)?;
     let handoff_url = ticket
@@ -516,7 +606,8 @@ pub fn run() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             get_backup_settings,
-            save_backup_settings
+            save_backup_settings,
+            reset_main_window
         ])
         .setup(|app| {
             let config_dir = app.path().app_config_dir()?;
@@ -619,6 +710,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn centers_window_inside_display_work_area() {
+        assert_eq!(
+            centered_position(
+                PhysicalPosition::new(0, 25),
+                PhysicalSize::new(1728, 1055),
+                PhysicalSize::new(1280, 840),
+            ),
+            PhysicalPosition::new(224, 132)
+        );
+        assert_eq!(
+            centered_position(
+                PhysicalPosition::new(-1920, 0),
+                PhysicalSize::new(1920, 1080),
+                PhysicalSize::new(1280, 840),
+            ),
+            PhysicalPosition::new(-1600, 120)
+        );
+    }
+
+    #[test]
     fn handoff_script_contains_ticket_only_behind_local_page_check() {
         let ticket = HandoffTicket {
             server_url: "https://zhiyu.example.com".parse().unwrap(),
@@ -637,6 +748,8 @@ mod tests {
         let chrome_script = window_chrome_script(&ticket.server_url).unwrap();
         assert!(chrome_script.contains("location.origin !== \"https://zhiyu.example.com\""));
         assert!(chrome_script.contains(".sidebar-logout{display:none}"));
+        assert!(chrome_script.contains("data-tauri-drag-region"));
+        assert!(chrome_script.contains("reset_main_window"));
         let html = include_str!("../../placeholder/handoff.html");
         assert_eq!(html.matches("<form").count(), 1);
         assert!(!html.contains("http://"));
