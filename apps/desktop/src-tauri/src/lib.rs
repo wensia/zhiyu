@@ -1,31 +1,47 @@
 mod backup_client;
 mod config;
 
-use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use anyhow::{Context, Result, anyhow, bail};
-use backup_client::{BackupClient, get_backup_settings, save_backup_settings};
+use backup_client::{BackupClient, HandoffTicket, get_backup_settings, save_backup_settings};
 use tauri::{
     AppHandle, Manager, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
     menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    webview::{Cookie, cookie},
 };
 use tracing_subscriber::EnvFilter;
 
-const DEFAULT_DESKTOP_URL: &str = "https://zhiyu.askfish.net";
-const SETTINGS_MENU_ID: &str = "backup-settings";
-const WINDOW_CHROME_SCRIPT: &str = r#"(function () {
-  var css = ".sidebar{padding-top:34px}.app-shell[data-sidebar='collapsed'] .topbar{padding-left:76px}";
-  function inject() {
+const SETTINGS_MENU_ID: &str = "connection-settings";
+const SESSION_COOKIE_NAMES: [&str; 2] = ["__Host-zhiyu_session", "zhiyu_session"];
+const HANDOFF_PAGE_TIMEOUT: Duration = Duration::from_secs(20);
+fn window_chrome_script(server_url: &Url) -> Result<String> {
+    let origin = serde_json::to_string(&server_url.origin().ascii_serialization())?;
+    Ok(format!(
+        r##"(function () {{
+  if (location.origin !== {origin}) return;
+  var css = ".sidebar{{padding-top:34px}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}";
+  function inject() {{
     if (document.getElementById("zhiyu-desktop-chrome")) return;
     var style = document.createElement("style");
     style.id = "zhiyu-desktop-chrome";
     style.textContent = css;
     document.head.appendChild(style);
-  }
+  }}
   if (document.head) inject();
   else document.addEventListener("DOMContentLoaded", inject);
-})();"#;
+}})();"##
+    ))
+}
+
+#[derive(Default)]
+struct HandoffGate {
+    previous_session_cookies: Vec<(String, String)>,
+    pending: bool,
+}
 
 fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window("settings") {
@@ -35,7 +51,7 @@ fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
         return Ok(());
     }
     WebviewWindowBuilder::new(app, "settings", WebviewUrl::App("settings.html".into()))
-        .title("备份设置")
+        .title("连接设置")
         .inner_size(640.0, 720.0)
         .min_inner_size(560.0, 620.0)
         .resizable(true)
@@ -43,151 +59,362 @@ fn open_settings_window(app: &tauri::AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
-fn fallback_desktop_url() -> Result<Url> {
-    std::env::var("ZHIYU_DESKTOP_URL")
-        .unwrap_or_else(|_| DEFAULT_DESKTOP_URL.to_owned())
-        .parse()
-        .context("桌面远程 URL 无效")
+#[cfg(test)]
+fn is_local_page(url: &Url, page: &str) -> bool {
+    let local_origin = (url.scheme() == "tauri" && url.host_str() == Some("localhost"))
+        || (url.scheme() == "http" && url.host_str() == Some("tauri.localhost"));
+    local_origin && url.path() == format!("/{page}")
 }
 
-fn webview_session_cookie(session: &backup_client::SessionHandoff) -> Result<Cookie<'static>> {
-    let secure = session.server_url.scheme() == "https";
-    if session.cookie_name.starts_with("__Host-") && !secure {
-        bail!("__Host- cookie 只能注入 HTTPS 地址");
-    }
-    let cookie = Cookie::build((session.cookie_name.clone(), session.cookie_value.clone()))
-        .path("/")
-        .http_only(true)
-        .same_site(cookie::SameSite::Lax)
-        .secure(secure)
-        .max_age(cookie::time::Duration::seconds(session.max_age))
-        .build();
-    if cookie.domain().is_some() {
-        bail!("会话 cookie 意外包含 Domain，拒绝注入");
-    }
-    Ok(cookie)
+fn local_sibling_url(window: &WebviewWindow, page: &str) -> Result<Url> {
+    let mut url = window.url().context("读取桌面本地页面 URL 失败")?;
+    url.set_path(&format!("/{page}"));
+    url.set_query(None);
+    url.set_fragment(None);
+    Ok(url)
 }
 
-async fn inject_session_cookie(
+fn same_origin(left: &Url, right: &Url) -> bool {
+    left.origin() == right.origin()
+}
+
+fn error_url_with_code(url: &Url, code: &str) -> Url {
+    let mut target = url.clone();
+    target.set_fragment(Some(code));
+    target
+}
+
+fn handoff_csp(server_url: &Url) -> String {
+    format!(
+        "default-src 'none'; form-action {}",
+        server_url.origin().ascii_serialization()
+    )
+}
+
+fn handoff_initialization_script(ticket: &HandoffTicket, failure_reason: &str) -> Result<String> {
+    let endpoint = ticket
+        .server_url
+        .join("desktop/handoff")
+        .context("无法构造桌面交接地址")?;
+    let endpoint = serde_json::to_string(endpoint.as_str())?;
+    let ticket = serde_json::to_string(&ticket.ticket)?;
+    let failure_reason = serde_json::to_string(failure_reason)?;
+    Ok(format!(
+        r##"(function () {{
+  function isLocal(page) {{
+    var local = (location.protocol === "tauri:" && location.hostname === "localhost") ||
+      (location.protocol === "http:" && location.hostname === "tauri.localhost");
+    return local && location.pathname === "/" + page;
+  }}
+  if (isLocal("handoff.html")) {{
+    document.addEventListener("DOMContentLoaded", function () {{
+      var form = document.getElementById("handoff-form");
+      form.action = {endpoint};
+      form.elements.ticket.value = {ticket};
+      form.submit();
+    }}, {{ once: true }});
+    return;
+  }}
+  if (isLocal("error.html")) {{
+    document.addEventListener("DOMContentLoaded", function () {{
+      var reasons = {{
+        "#cookie-readback": {failure_reason},
+        "#session-expired": "桌面会话已失效；已阻止显示邮箱登录页。请重新保存连接设置。",
+        "#timeout": "桌面交接页在 20 秒内没有完成表单提交与 cookie 确认；已阻止加载邮箱登录页。"
+      }};
+      document.getElementById("failure-reason").textContent = reasons[location.hash] || {failure_reason};
+    }}, {{ once: true }});
+  }}
+}})();"##
+    ))
+}
+
+fn error_initialization_script(reason: &str) -> Result<String> {
+    let reason = serde_json::to_string(reason)?;
+    Ok(format!(
+        r#"(function () {{
+  var local = (location.protocol === "tauri:" && location.hostname === "localhost") ||
+    (location.protocol === "http:" && location.hostname === "tauri.localhost");
+  if (!local || location.pathname !== "/error.html") return;
+  document.addEventListener("DOMContentLoaded", function () {{
+    document.getElementById("failure-reason").textContent = {reason};
+  }}, {{ once: true }});
+}})();"#
+    ))
+}
+
+fn session_cookies_for_url(
     window: &WebviewWindow,
-    session: &backup_client::SessionHandoff,
-) -> Result<()> {
-    let cookie = webview_session_cookie(session)?;
-    tracing::info!(
-        cookie_name = %session.cookie_name,
-        secure = cookie.secure(),
-        path = cookie.path(),
-        has_domain = cookie.domain().is_some(),
-        "injecting desktop session cookie before remote navigation"
-    );
-    match catch_unwind(AssertUnwindSafe(|| window.set_cookie(cookie))) {
-        Ok(Ok(())) => tracing::info!(
-            cookie_name = %session.cookie_name,
-            "desktop session cookie injection returned success"
-        ),
-        Ok(Err(error)) => {
-            tracing::error!(
-                error = %error,
-                cookie_name = %session.cookie_name,
-                "desktop session cookie injection returned an error"
-            );
-            return Err(anyhow!(error).context("向 WebView 注入会话 cookie 失败"));
-        }
-        Err(_) => {
-            tracing::error!(
-                cookie_name = %session.cookie_name,
-                "desktop session cookie injection panicked"
-            );
-            bail!("向 WebView 注入会话 cookie 时发生 panic");
-        }
-    }
-
+    server_url: &Url,
+) -> Result<Vec<(String, String)>> {
     let cookies = match catch_unwind(AssertUnwindSafe(|| {
-        window.cookies_for_url(session.server_url.clone())
+        window.cookies_for_url(server_url.clone())
     })) {
         Ok(Ok(cookies)) => cookies,
         Ok(Err(error)) => {
-            tracing::error!(
-                error = %error,
-                cookie_name = %session.cookie_name,
-                "reading desktop session cookie back returned an error"
-            );
+            tracing::error!(error = %error, "reading desktop session cookie back returned an error");
             return Err(anyhow!(error).context("从 WebView 回读会话 cookie 失败"));
         }
         Err(_) => {
-            tracing::error!(
-                cookie_name = %session.cookie_name,
-                "reading desktop session cookie back panicked"
-            );
+            tracing::error!("reading desktop session cookie back panicked");
             bail!("从 WebView 回读会话 cookie 时发生 panic");
         }
     };
+    Ok(cookies
+        .into_iter()
+        .filter(|cookie| SESSION_COOKIE_NAMES.contains(&cookie.name()))
+        .map(|cookie| (cookie.name().to_owned(), cookie.value().to_owned()))
+        .collect())
+}
+
+fn confirm_new_session_cookie(
+    window: &WebviewWindow,
+    server_url: &Url,
+    previous: &[(String, String)],
+) -> Result<()> {
+    let cookies = session_cookies_for_url(window, server_url)?;
     let cookie_names = cookies
         .iter()
-        .map(|cookie| cookie.name().to_owned())
+        .map(|(name, _)| name.clone())
         .collect::<Vec<_>>();
-    let found = cookies.iter().any(|cookie| {
-        cookie.name() == session.cookie_name && cookie.value() == session.cookie_value
-    });
+    let found = cookies.iter().any(|current| !previous.contains(current));
     tracing::info!(
-        cookie_name = %session.cookie_name,
         found,
         cookie_names = ?cookie_names,
         "desktop session cookie readback completed"
     );
     if !found {
-        if session.cookie_name.starts_with("__Host-") {
-            bail!("__Host- cookie 注入失败，已回退到邮箱登录");
-        }
-        bail!("session cookie 注入失败，已回退到邮箱登录");
+        bail!("交接响应未写入新的会话 cookie；已阻止加载邮箱登录页");
     }
     Ok(())
 }
 
-pub(crate) async fn handoff_main_window_session(app: &AppHandle, client: &BackupClient) {
-    let Some(window) = app.get_webview_window("main") else {
-        let error = "找不到主窗口，无法完成网页登录会话交接".to_owned();
-        tracing::error!(%error);
-        client.record_session_handoff_error(Some(error)).await;
-        return;
-    };
-    let target_url = client
-        .connection_server_url()
-        .or_else(|_| fallback_desktop_url());
-    let target_url = match target_url {
-        Ok(url) => url,
-        Err(error) => {
-            let readable = format!("无法确定桌面远程 URL：{error:#}");
-            tracing::error!(error = %readable, "desktop session handoff failed");
-            client.record_session_handoff_error(Some(readable)).await;
+fn close_main_window(app: &AppHandle) -> Result<()> {
+    if let Some(window) = app.get_webview_window("main") {
+        window.close().context("关闭旧主窗口失败")?;
+    }
+    Ok(())
+}
+
+fn main_window_builder<'a>(
+    app: &'a AppHandle,
+    initial_url: WebviewUrl,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle<tauri::Wry>> {
+    let mut builder = WebviewWindowBuilder::new(app, "main", initial_url)
+        .title("知余")
+        .inner_size(1280.0, 840.0)
+        .min_inner_size(960.0, 640.0)
+        .background_color(tauri::window::Color(0xff, 0xff, 0xff, 0xff));
+    #[cfg(target_os = "macos")]
+    {
+        builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .hidden_title(true);
+    }
+    builder
+}
+
+fn show_handoff_error(app: &AppHandle, reason: &str) -> Result<()> {
+    close_main_window(app)?;
+    let script = error_initialization_script(reason)?;
+    let navigation_app = app.clone();
+    let window = main_window_builder(app, WebviewUrl::App("error.html".into()))
+        .initialization_script(script)
+        .on_navigation(move |url| {
+            if url.scheme() == "zhiyu" && url.host_str() == Some("open-settings") {
+                if let Err(error) = open_settings_window(&navigation_app) {
+                    tracing::error!(error = %error, "opening connection settings failed");
+                }
+                return false;
+            }
+            true
+        })
+        .build()?;
+    window.show()?;
+    Ok(())
+}
+
+fn open_handoff_window(
+    app: &AppHandle,
+    client: &BackupClient,
+    ticket: HandoffTicket,
+) -> Result<()> {
+    close_main_window(app)?;
+    let server_url = ticket.server_url.clone();
+    let failure_reason =
+        "交接响应没有写入新的会话 cookie。请检查服务器地址与部署配置后重新保存连接设置。";
+    let initialization_script = format!(
+        "{}\n{}",
+        handoff_initialization_script(&ticket, failure_reason)?,
+        window_chrome_script(&server_url)?
+    );
+    let gate = Arc::new(Mutex::new(HandoffGate::default()));
+    let error_url = Arc::new(Mutex::new(None::<Url>));
+    let navigation_app = app.clone();
+    let navigation_client = client.clone();
+    let navigation_server_url = server_url.clone();
+    let navigation_gate = gate.clone();
+    let navigation_error_url = error_url.clone();
+    let csp_server_url = server_url.clone();
+
+    let window = main_window_builder(app, WebviewUrl::App("index.html".into()))
+        .visible(false)
+        .initialization_script(initialization_script)
+        .on_web_resource_request(move |request, response| {
+            if request.uri().path() == "/handoff.html" {
+                let csp = handoff_csp(&csp_server_url);
+                if let Ok(value) = csp.parse() {
+                    response.headers_mut().insert("Content-Security-Policy", value);
+                }
+            }
+        })
+        .on_navigation(move |url| {
+            if url.scheme() == "zhiyu" && url.host_str() == Some("open-settings") {
+                if let Err(error) = open_settings_window(&navigation_app) {
+                    tracing::error!(error = %error, "opening connection settings failed");
+                }
+                return false;
+            }
+            if !same_origin(url, &navigation_server_url) {
+                return true;
+            }
+
+            let Some(window) = navigation_app.get_webview_window("main") else {
+                tracing::error!("main window disappeared during desktop session handoff");
+                return false;
+            };
+            if url.path() == "/login" {
+                let reason = "桌面会话已失效；已阻止显示邮箱登录页。请重新保存连接设置。";
+                tracing::error!(error = reason, "desktop email login navigation blocked");
+                let client = navigation_client.clone();
+                let reason_owned = reason.to_owned();
+                tauri::async_runtime::spawn(async move {
+                    client.record_session_handoff_error(Some(reason_owned)).await;
+                });
+                if let Some(target) = navigation_error_url.lock().ok().and_then(|url| url.clone()) {
+                    if let Err(error) =
+                        window.navigate(error_url_with_code(&target, "session-expired"))
+                    {
+                        tracing::error!(error = %error, "opening local handoff error page failed");
+                    }
+                    let _ = window.show();
+                }
+                return false;
+            }
+
+            let mut gate = match navigation_gate.lock() {
+                Ok(gate) => gate,
+                Err(_) => {
+                    tracing::error!("desktop handoff gate lock was poisoned");
+                    return false;
+                }
+            };
+            if !gate.pending {
+                return true;
+            }
+            let result = confirm_new_session_cookie(
+                &window,
+                &navigation_server_url,
+                &gate.previous_session_cookies,
+            );
+            gate.pending = false;
+            drop(gate);
+            match result {
+                Ok(()) => {
+                    tracing::info!(url = %url, "desktop session handoff succeeded");
+                    let client = navigation_client.clone();
+                    tauri::async_runtime::spawn(async move {
+                        client.record_session_handoff_error(None).await;
+                    });
+                    if let Err(error) = window.show() {
+                        tracing::error!(error = %error, "showing authenticated main window failed");
+                    }
+                    true
+                }
+                Err(error) => {
+                    let readable = format!("{error:#}");
+                    tracing::error!(error = %readable, "desktop session handoff failed");
+                    let client = navigation_client.clone();
+                    let recorded = readable.clone();
+                    tauri::async_runtime::spawn(async move {
+                        client.record_session_handoff_error(Some(recorded)).await;
+                    });
+                    if let Some(target) = navigation_error_url.lock().ok().and_then(|url| url.clone()) {
+                        if let Err(error) =
+                            window.navigate(error_url_with_code(&target, "cookie-readback"))
+                        {
+                            tracing::error!(error = %error, "opening local handoff error page failed");
+                        }
+                        let _ = window.show();
+                    }
+                    false
+                }
+            }
+        })
+        .build()?;
+
+    let previous_session_cookies = session_cookies_for_url(&window, &server_url)?;
+    let handoff_url = local_sibling_url(&window, "handoff.html")?;
+    let local_error_url = local_sibling_url(&window, "error.html")?;
+    *error_url
+        .lock()
+        .map_err(|_| anyhow!("桌面错误页状态锁已损坏"))? = Some(local_error_url);
+    {
+        let mut gate = gate.lock().map_err(|_| anyhow!("桌面交接状态锁已损坏"))?;
+        gate.previous_session_cookies = previous_session_cookies;
+        gate.pending = true;
+    }
+    window
+        .navigate(handoff_url)
+        .context("打开本地交接跳板页失败")?;
+    let timeout_gate = gate.clone();
+    let timeout_app = app.clone();
+    let timeout_client = client.clone();
+    let timeout_error_url = error_url.clone();
+    tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(HANDOFF_PAGE_TIMEOUT).await;
+        let timed_out = timeout_gate.lock().is_ok_and(|mut gate| {
+            if gate.pending {
+                gate.pending = false;
+                true
+            } else {
+                false
+            }
+        });
+        if !timed_out {
             return;
         }
-    };
-
-    let handoff_result = match client.exchange_session().await {
-        Ok(session) => inject_session_cookie(&window, &session).await,
-        Err(error) => Err(error.context("用 api-key 换取网页登录会话失败")),
-    };
-    match handoff_result {
-        Ok(()) => {
-            client.record_session_handoff_error(None).await;
-            tracing::info!(url = %target_url, "desktop session handoff succeeded");
+        let reason = "桌面交接页在 20 秒内没有完成表单提交与 cookie 确认；已阻止加载邮箱登录页。";
+        tracing::error!(error = reason, "desktop session handoff timed out");
+        timeout_client
+            .record_session_handoff_error(Some(reason.to_owned()))
+            .await;
+        if let Some(window) = timeout_app.get_webview_window("main")
+            && let Some(target) = timeout_error_url.lock().ok().and_then(|url| url.clone())
+        {
+            if let Err(error) = window.navigate(error_url_with_code(&target, "timeout")) {
+                tracing::error!(error = %error, "opening local timeout error page failed");
+            }
+            let _ = window.show();
         }
-        Err(error) => {
-            let readable = format!("{error:#}");
-            tracing::error!(
-                error = %readable,
-                url = %target_url,
-                "desktop session handoff failed; falling back to email login"
-            );
-            client.record_session_handoff_error(Some(readable)).await;
-        }
-    }
+    });
+    Ok(())
+}
 
-    if let Err(error) = window.navigate(target_url.clone()) {
-        let readable = format!("打开远程页面 {target_url} 失败：{error}");
-        tracing::error!(error = %readable, "desktop remote navigation failed");
-        client.record_session_handoff_error(Some(readable)).await;
+pub(crate) async fn handoff_main_window_session(app: &AppHandle, client: &BackupClient) {
+    let result = match client.create_handoff_ticket().await {
+        Ok(ticket) => open_handoff_window(app, client, ticket),
+        Err(error) => Err(error.context("用 api-key 获取桌面交接票据失败")),
+    };
+    if let Err(error) = result {
+        let readable = format!("{error:#}");
+        tracing::error!(error = %readable, "desktop session handoff failed");
+        client
+            .record_session_handoff_error(Some(readable.clone()))
+            .await;
+        if let Err(page_error) = show_handoff_error(app, &readable) {
+            tracing::error!(error = %page_error, "showing local handoff error page failed");
+        }
     }
 }
 
@@ -213,7 +440,7 @@ pub fn run() {
             backup_client.spawn_scheduler();
             app.manage(backup_client.clone());
 
-            let settings_item = MenuItemBuilder::with_id(SETTINGS_MENU_ID, "备份设置…")
+            let settings_item = MenuItemBuilder::with_id(SETTINGS_MENU_ID, "连接设置…")
                 .accelerator("CmdOrCtrl+Comma")
                 .build(app)?;
             let app_menu = SubmenuBuilder::new(app, "知余")
@@ -245,37 +472,19 @@ pub fn run() {
                 if event.id().as_ref() == SETTINGS_MENU_ID
                     && let Err(error) = open_settings_window(handle)
                 {
-                    tracing::error!(error = %error, "opening backup settings failed");
+                    tracing::error!(error = %error, "opening connection settings failed");
                 }
             });
 
-            let initial_url = if needs_settings {
-                WebviewUrl::External(fallback_desktop_url()?)
+            if needs_settings {
+                // 未配置时不创建主窗口，更不会加载远程 URL；连接设置是唯一入口。
+                open_settings_window(app.handle())?;
             } else {
-                WebviewUrl::App("index.html".into())
-            };
-            let mut window = WebviewWindowBuilder::new(app, "main", initial_url)
-                .title("知余")
-                .inner_size(1280.0, 840.0)
-                .min_inner_size(960.0, 640.0)
-                .background_color(tauri::window::Color(0xff, 0xff, 0xff, 0xff))
-                .initialization_script(WINDOW_CHROME_SCRIPT);
-            #[cfg(target_os = "macos")]
-            {
-                window = window
-                    .title_bar_style(tauri::TitleBarStyle::Overlay)
-                    .hidden_title(true);
-            }
-            window.build()?;
-            if !needs_settings {
                 let handle = app.handle().clone();
                 let client = backup_client.clone();
                 tauri::async_runtime::spawn(async move {
                     handoff_main_window_session(&handle, &client).await;
                 });
-            }
-            if needs_settings {
-                open_settings_window(app.handle())?;
             }
             Ok(())
         })
@@ -288,21 +497,41 @@ mod tests {
     use super::*;
 
     #[test]
-    fn host_cookie_is_secure_path_scoped_and_has_no_domain() {
-        let session = backup_client::SessionHandoff {
+    fn handoff_script_contains_ticket_only_behind_local_page_check() {
+        let ticket = HandoffTicket {
             server_url: "https://zhiyu.example.com".parse().unwrap(),
-            cookie_name: "__Host-zhiyu_session".to_owned(),
-            cookie_value: "secret".to_owned(),
-            max_age: 2_592_000,
+            ticket: "single-use-secret".to_owned(),
         };
+        let script = handoff_initialization_script(&ticket, "failure").unwrap();
+        let check = script.find("isLocal(\"handoff.html\")").unwrap();
+        let secret = script.find("single-use-secret").unwrap();
+        assert!(check < secret);
+        assert!(script.contains("https://zhiyu.example.com/desktop/handoff"));
+        assert!(!script.contains("?ticket="));
+        assert_eq!(
+            handoff_csp(&ticket.server_url),
+            "default-src 'none'; form-action https://zhiyu.example.com"
+        );
+        let html = include_str!("../../placeholder/handoff.html");
+        assert_eq!(html.matches("<form").count(), 1);
+        assert!(!html.contains("http://"));
+        assert!(!html.contains("https://"));
+        assert!(!html.contains("<script"));
+    }
 
-        let cookie = webview_session_cookie(&session).unwrap();
-
-        assert_eq!(cookie.path(), Some("/"));
-        assert_eq!(cookie.secure(), Some(true));
-        assert_eq!(cookie.http_only(), Some(true));
-        assert_eq!(cookie.same_site(), Some(cookie::SameSite::Lax));
-        assert_eq!(cookie.domain(), None);
-        assert_eq!(cookie.max_age().unwrap().whole_seconds(), 2_592_000);
+    #[test]
+    fn local_page_detection_rejects_remote_lookalikes() {
+        assert!(is_local_page(
+            &"tauri://localhost/handoff.html".parse().unwrap(),
+            "handoff.html"
+        ));
+        assert!(is_local_page(
+            &"http://tauri.localhost/handoff.html".parse().unwrap(),
+            "handoff.html"
+        ));
+        assert!(!is_local_page(
+            &"https://zhiyu.example.com/handoff.html".parse().unwrap(),
+            "handoff.html"
+        ));
     }
 }

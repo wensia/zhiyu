@@ -5,8 +5,8 @@ use argon2::{
     password_hash::{SaltString, rand_core::OsRng},
 };
 use axum::{
-    Json,
-    extract::{FromRequestParts, State},
+    Form, Json,
+    extract::{FromRequestParts, State, rejection::FormRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
@@ -14,7 +14,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use libsql::{TransactionBehavior, params};
 use rand::RngCore;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use utoipa::ToSchema;
 use uuid::Uuid;
@@ -32,6 +32,7 @@ use crate::{
 const SESSION_DAYS: i64 = 30;
 const SESSION_MAX_AGE_SECONDS: i64 = SESSION_DAYS * 86_400;
 const API_KEY_DAYS: i64 = 3650;
+const HANDOFF_TICKET_SECONDS: i64 = 60;
 
 #[derive(Debug, Serialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
@@ -47,6 +48,16 @@ pub struct SessionFromKeyResponse {
     #[serde(flatten)]
     user: UserView,
     session_cookie: SessionCookieView,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HandoffTicketResponse {
+    ticket: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HandoffTicketForm {
+    ticket: String,
 }
 
 #[derive(Debug, Clone)]
@@ -357,32 +368,185 @@ pub async fn session_from_key(
     Ok(response)
 }
 
-async fn create_session(state: &AppState, user: AuthUser) -> Result<(UserView, String), ApiError> {
-    let (token, token_hash) = new_token();
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/handoff-tickets",
+    responses(
+        (status = 200, body = HandoffTicketResponse),
+        (status = 401, body = crate::error::ErrorBody)
+    ),
+    security(("bearerAuth" = []))
+)]
+pub async fn create_handoff_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    // 与 session-from-key 一样，这里不能使用会优先接受 session cookie 的 AuthUser
+    // 提取器。桌面交接票据只允许由显式 Bearer api-key 签发。
+    let api_key =
+        bearer_token(&headers).ok_or_else(|| ApiError::unauthorized("请提供 API 密钥"))?;
+    let user = authenticate_api_key(&state, api_key).await?;
+    let (ticket, token_hash) = new_token();
     let now = Utc::now();
-    state
-        .connection()
-        .await?
-        .execute(
-            "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
-            params![
-                Uuid::now_v7().to_string(),
-                user.id.clone(),
-                token_hash,
-                now.to_rfc3339(),
-                (now + Duration::days(SESSION_DAYS)).to_rfc3339()
-            ],
+    let conn = state.connection().await?;
+    conn.execute(
+        "DELETE FROM handoff_tickets WHERE expires_at <= ?1",
+        [now.to_rfc3339()],
+    )
+    .await?;
+    conn.execute(
+        "INSERT INTO handoff_tickets(id, user_id, token_hash, expires_at, consumed_at, created_at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::now_v7().to_string(),
+            user.id,
+            token_hash,
+            (now + Duration::seconds(HANDOFF_TICKET_SECONDS)).to_rfc3339(),
+            now.to_rfc3339()
+        ],
+    )
+    .await?;
+    let mut response = Json(HandoffTicketResponse { ticket }).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+pub async fn desktop_handoff(
+    State(state): State<AppState>,
+    form: Result<Form<HandoffTicketForm>, FormRejection>,
+) -> Result<Response, ApiError> {
+    let Ok(Form(input)) = form else {
+        return Ok(desktop_handoff_redirect(None));
+    };
+    if input.ticket.is_empty() {
+        return Ok(desktop_handoff_redirect(None));
+    }
+
+    let token_hash = hash_token(&input.ticket);
+    let now = Utc::now();
+    let now_text = now.to_rfc3339();
+    let conn = state.connection().await?;
+    // Immediate 事务在读取前先取得写锁；同一张票据的并发请求只能有一个看到
+    // consumed_at IS NULL，消费标记与 session 创建也会一起提交或回滚。
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await?;
+    tx.execute(
+        "DELETE FROM handoff_tickets WHERE expires_at <= ?1",
+        [now_text.clone()],
+    )
+    .await?;
+    let mut rows = tx
+        .query(
+            "SELECT h.id, u.id, u.email, u.timezone FROM handoff_tickets h JOIN users u ON u.id = h.user_id WHERE h.token_hash = ?1 AND h.expires_at > ?2 AND h.consumed_at IS NULL AND u.email_verified_at IS NOT NULL",
+            params![token_hash, now_text.clone()],
         )
         .await?;
-    Ok((
-        UserView {
+    let Some(row) = rows.next().await? else {
+        drop(rows);
+        tx.commit().await?;
+        return Ok(desktop_handoff_redirect(None));
+    };
+    let ticket_id: String = row.get(0)?;
+    let user = AuthUser {
+        id: row.get(1)?,
+        email: row.get(2)?,
+        timezone: row.get(3)?,
+        session_hash: None,
+    };
+    drop(row);
+    drop(rows);
+    let changed = tx
+        .execute(
+            "UPDATE handoff_tickets SET consumed_at = ?1 WHERE id = ?2 AND consumed_at IS NULL AND expires_at > ?1",
+            params![now_text, ticket_id],
+        )
+        .await?;
+    if changed != 1 {
+        tx.commit().await?;
+        return Ok(desktop_handoff_redirect(None));
+    }
+    let session = new_session(user, now);
+    tx.execute(
+        "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        params![
+            session.id,
+            session.user.id,
+            session.token_hash,
+            session.created_at,
+            session.expires_at
+        ],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(desktop_handoff_redirect(Some(session_cookie_header(
+        &state.config,
+        &session.token,
+        false,
+    ))))
+}
+
+fn desktop_handoff_redirect(cookie: Option<String>) -> Response {
+    let mut response = StatusCode::SEE_OTHER.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::LOCATION, HeaderValue::from_static("/"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if let Some(cookie) = cookie
+        && let Ok(value) = HeaderValue::from_str(&cookie)
+    {
+        headers.insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+struct NewSession {
+    id: String,
+    user: UserView,
+    token: String,
+    token_hash: String,
+    created_at: String,
+    expires_at: String,
+}
+
+fn new_session(user: AuthUser, now: chrono::DateTime<Utc>) -> NewSession {
+    let (token, token_hash) = new_token();
+    NewSession {
+        id: Uuid::now_v7().to_string(),
+        user: UserView {
             id: user.id,
             email: user.email,
             timezone: user.timezone,
             email_verified: true,
         },
         token,
-    ))
+        token_hash,
+        created_at: now.to_rfc3339(),
+        expires_at: (now + Duration::days(SESSION_DAYS)).to_rfc3339(),
+    }
+}
+
+async fn create_session(state: &AppState, user: AuthUser) -> Result<(UserView, String), ApiError> {
+    let session = new_session(user, Utc::now());
+    state
+        .connection()
+        .await?
+        .execute(
+            "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![
+                session.id,
+                session.user.id.clone(),
+                session.token_hash,
+                session.created_at,
+                session.expires_at
+            ],
+        )
+        .await?;
+    Ok((session.user, session.token))
 }
 
 #[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 200, body = MessageResponse)), security(("cookieAuth" = [])))]

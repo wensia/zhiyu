@@ -343,6 +343,201 @@ async fn session_from_key_issued_cookie_authenticates_later_requests() {
     assert_eq!(user["email"], "session-user@zhiyu.local");
 }
 
+async fn issue_handoff_ticket(test: &TestApp, email: &str) -> String {
+    let key = auth::issue_api_key(&test.state, email).await.unwrap();
+    let (status, headers, body) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/handoff-tickets",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    body["ticket"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn handoff_ticket_is_short_lived_hashed_and_bearer_only() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("ticket-cookie@zhiyu.local").await;
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/handoff-tickets",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let ticket = issue_handoff_ticket(&test, "ticket@zhiyu.local").await;
+    let conn = test.state.connection().await.unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT token_hash, created_at, expires_at FROM handoff_tickets",
+            (),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let token_hash: String = row.get(0).unwrap();
+    let created_at: String = row.get(1).unwrap();
+    let expires_at: String = row.get(2).unwrap();
+    assert_ne!(token_hash, ticket);
+    assert_eq!(token_hash.len(), 64);
+    let lifetime = chrono::DateTime::parse_from_rfc3339(&expires_at).unwrap()
+        - chrono::DateTime::parse_from_rfc3339(&created_at).unwrap();
+    assert_eq!(lifetime.num_seconds(), 60);
+}
+
+#[tokio::test]
+async fn valid_desktop_handoff_sets_cookie_and_redirects_despite_local_origin() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-valid@zhiyu.local").await;
+
+    let (status, headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers.get(header::LOCATION).unwrap(), "/");
+    assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    assert_eq!(headers.get(header::REFERRER_POLICY).unwrap(), "no-referrer");
+    let set_cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(set_cookie.starts_with("__Host-zhiyu_session="));
+    assert!(set_cookie.contains("; Path=/"));
+    assert!(set_cookie.contains("; HttpOnly"));
+    assert!(set_cookie.contains("; SameSite=Lax"));
+    assert!(set_cookie.contains("; Secure"));
+    assert!(!set_cookie.contains("Domain="));
+
+    let cookie = set_cookie.split(';').next().unwrap();
+    let (status, _, user) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        Some(cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(user["email"], "handoff-valid@zhiyu.local");
+}
+
+#[tokio::test]
+async fn expired_desktop_handoff_redirects_without_cookie() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-expired@zhiyu.local").await;
+    test.state
+        .connection()
+        .await
+        .unwrap()
+        .execute(
+            "UPDATE handoff_tickets SET expires_at = ?1",
+            [(chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339()],
+        )
+        .await
+        .unwrap();
+
+    let (status, headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(!headers.contains_key(header::SET_COOKIE));
+}
+
+#[tokio::test]
+async fn consumed_desktop_handoff_redirects_without_a_second_cookie() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-consumed@zhiyu.local").await;
+    let (_, first_headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert!(first_headers.contains_key(header::SET_COOKIE));
+
+    let (status, second_headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(!second_headers.contains_key(header::SET_COOKIE));
+}
+
+#[tokio::test]
+async fn concurrent_desktop_handoff_consumption_succeeds_exactly_once() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-race@zhiyu.local").await;
+    let body = format!("ticket={ticket}");
+    let (first, second) = tokio::join!(
+        send_form(
+            &test.router,
+            "/desktop/handoff",
+            &body,
+            None,
+            Some("tauri://localhost")
+        ),
+        send_form(
+            &test.router,
+            "/desktop/handoff",
+            &body,
+            None,
+            Some("tauri://localhost")
+        )
+    );
+    assert_eq!(first.0, StatusCode::SEE_OTHER);
+    assert_eq!(second.0, StatusCode::SEE_OTHER);
+    let cookie_count = [first.1, second.1]
+        .into_iter()
+        .filter(|headers| headers.contains_key(header::SET_COOKIE))
+        .count();
+    assert_eq!(cookie_count, 1);
+}
+
+#[tokio::test]
+async fn invalid_desktop_handoff_ignores_existing_session_cookie() {
+    let test = TestApp::new().await;
+    let cookie = test
+        .register_and_login("handoff-old-cookie@zhiyu.local")
+        .await;
+    let (status, headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        "ticket=not-a-valid-ticket",
+        Some(&cookie),
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers.get(header::LOCATION).unwrap(), "/");
+    assert!(!headers.contains_key(header::SET_COOKIE));
+}
+
 #[tokio::test]
 async fn invalid_api_key_is_rejected() {
     let test = TestApp::new().await;
@@ -691,7 +886,7 @@ async fn api_key_lists_and_downloads_verified_backup() {
     // 服务端漏掉这个属性时两边解析不上，而各自的单测都会照样通过——所以这里既断言
     // camelCase 存在，也断言 snake_case 不存在，把跨端契约钉死在服务端这一侧。
     assert_eq!(list[0]["createdAt"], "2026-08-10T02:03:04Z");
-    assert_eq!(list[0]["schemaVersion"], 10);
+    assert_eq!(list[0]["schemaVersion"], 11);
     assert!(list[0].get("created_at").is_none());
     assert!(list[0].get("schema_version").is_none());
 
@@ -2883,6 +3078,40 @@ async fn send_with_authorization(
         ))
         .unwrap();
     let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    (status, headers, body)
+}
+
+async fn send_form(
+    router: &Router,
+    uri: &str,
+    body: &str,
+    cookie: Option<&str>,
+    origin: Option<&str>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    if let Some(origin) = origin {
+        builder = builder.header(header::ORIGIN, origin);
+    }
+    let response = router
+        .clone()
+        .oneshot(builder.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
     let status = response.status();
     let headers = response.headers().clone();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();

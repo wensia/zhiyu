@@ -57,23 +57,13 @@ struct BackupStatus {
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct SessionFromKeyResponse {
-    session_cookie: SessionCookieResponse,
+struct HandoffTicketResponse {
+    ticket: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct SessionCookieResponse {
-    name: String,
-    value: String,
-    max_age: i64,
-}
-
-pub(crate) struct SessionHandoff {
+pub(crate) struct HandoffTicket {
     pub(crate) server_url: Url,
-    pub(crate) cookie_name: String,
-    pub(crate) cookie_value: String,
-    pub(crate) max_age: i64,
+    pub(crate) ticket: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -132,13 +122,9 @@ impl BackupClient {
         resolve_connection(&self.config_path).is_ok()
     }
 
-    pub(crate) fn connection_server_url(&self) -> Result<Url> {
-        Ok(resolve_connection(&self.config_path)?.server_url)
-    }
-
-    pub(crate) async fn exchange_session(&self) -> Result<SessionHandoff> {
+    pub(crate) async fn create_handoff_ticket(&self) -> Result<HandoffTicket> {
         let connection = resolve_connection(&self.config_path)?;
-        let url = endpoint(&connection.server_url, "api/v1/auth/session-from-key")?;
+        let url = endpoint(&connection.server_url, "api/v1/auth/handoff-tickets")?;
         let response = self
             .http
             .post(url)
@@ -146,23 +132,18 @@ impl BackupClient {
             .timeout(SESSION_HANDOFF_TIMEOUT)
             .send()
             .await
-            .map_err(|error| anyhow!("网络失败：无法用 api-key 换取网页登录会话：{error}"))?;
-        let response = require_success(response, "换取网页登录会话").await?;
+            .map_err(|error| anyhow!("网络失败：无法用 api-key 获取桌面交接票据：{error}"))?;
+        let response = require_success(response, "获取桌面交接票据").await?;
         let body = response
-            .json::<SessionFromKeyResponse>()
+            .json::<HandoffTicketResponse>()
             .await
-            .map_err(|error| anyhow!("服务器响应无效：会话交换响应不是预期 JSON：{error}"))?;
-        if body.session_cookie.name.is_empty()
-            || body.session_cookie.value.is_empty()
-            || body.session_cookie.max_age <= 0
-        {
-            bail!("服务器响应无效：会话 cookie 的名称、值或 maxAge 不正确");
+            .map_err(|error| anyhow!("服务器响应无效：交接票据响应不是预期 JSON：{error}"))?;
+        if body.ticket.is_empty() {
+            bail!("服务器响应无效：交接票据为空");
         }
-        Ok(SessionHandoff {
+        Ok(HandoffTicket {
             server_url: connection.server_url,
-            cookie_name: body.session_cookie.name,
-            cookie_value: body.session_cookie.value,
-            max_age: body.session_cookie.max_age,
+            ticket: body.ticket,
         })
     }
 

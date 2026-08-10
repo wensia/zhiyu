@@ -53,7 +53,7 @@ form.addEventListener("submit", async (event) => {
     });
     apiKey.value = "";
     render(state);
-    showResult("连接验证成功，设置已保存。备份拉取已在后台启动。", false);
+    showResult("连接验证成功，设置已保存。正在进入知余，备份拉取也已在后台启动。", false);
   } catch (error) {
     showResult(`保存失败：${String(error)}`, true);
   } finally {
