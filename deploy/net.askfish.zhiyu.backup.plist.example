@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.example.zhiyu.backup</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>-lc</string>
+    <string>set -a; . "$HOME/.zhiyu-backup.env"; set +a; exec "$HOME/path/to/zhiyu/scripts/pull-remote-backup.sh"</string>
+  </array>
+  <!-- 每天 12:30 与 20:30 各一次。launchd 会在睡眠错过后补跑，cron 则直接跳过 -->
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>12</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>20</integer><key>Minute</key><integer>30</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>/tmp/zhiyu-backup.log</string>
+  <key>StandardErrorPath</key><string>/tmp/zhiyu-backup.log</string>
+</dict>
+</plist>
