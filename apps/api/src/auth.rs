@@ -14,7 +14,9 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use libsql::{TransactionBehavior, params};
 use rand::RngCore;
+use serde::Serialize;
 use sha2::{Digest, Sha256};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -28,7 +30,24 @@ use crate::{
 };
 
 const SESSION_DAYS: i64 = 30;
+const SESSION_MAX_AGE_SECONDS: i64 = SESSION_DAYS * 86_400;
 const API_KEY_DAYS: i64 = 3650;
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCookieView {
+    name: String,
+    value: String,
+    max_age: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFromKeyResponse {
+    #[serde(flatten)]
+    user: UserView,
+    session_cookie: SessionCookieView,
+}
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
@@ -276,26 +295,22 @@ pub async fn login(
     let password_hash: String = row.get(1)?;
     let timezone: String = row.get(2)?;
     let verified_at: Option<String> = row.get(3)?;
+    drop(row);
+    drop(rows);
+    drop(conn);
     if !verify_password(input.password, password_hash).await? {
         return Err(ApiError::unauthorized("邮箱或密码不正确"));
     }
     if verified_at.is_none() {
         return Err(ApiError::forbidden("请先完成邮箱验证"));
     }
-
-    let (token, token_hash) = new_token();
-    let now = Utc::now();
-    conn.execute(
-        "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
-        params![Uuid::now_v7().to_string(), user_id.clone(), token_hash, now.to_rfc3339(), (now + Duration::days(SESSION_DAYS)).to_rfc3339()],
-    )
-    .await?;
-    let user = UserView {
+    let auth_user = AuthUser {
         id: user_id,
         email,
         timezone,
-        email_verified: true,
+        session_hash: None,
     };
+    let (user, token) = create_session(&state, auth_user).await?;
     let mut response = Json(user).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -303,6 +318,71 @@ pub async fn login(
             .map_err(ApiError::internal)?,
     );
     Ok(response)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/session-from-key",
+    responses(
+        (status = 200, body = SessionFromKeyResponse),
+        (status = 401, body = crate::error::ErrorBody)
+    ),
+    security(("bearerAuth" = []))
+)]
+pub async fn session_from_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    // 这里故意不使用 AuthUser 提取器：它会先接受 session cookie，而这个交换端点
+    // 必须只认显式 Bearer 凭证。
+    let api_key =
+        bearer_token(&headers).ok_or_else(|| ApiError::unauthorized("请提供 API 密钥"))?;
+    let user = authenticate_api_key(&state, api_key).await?;
+    let (user, token) = create_session(&state, user).await?;
+    let cookie_name = state.config.cookie_name().to_owned();
+    let body = SessionFromKeyResponse {
+        user,
+        session_cookie: SessionCookieView {
+            name: cookie_name,
+            value: token.clone(),
+            max_age: SESSION_MAX_AGE_SECONDS,
+        },
+    };
+    let mut response = Json(body).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&session_cookie_header(&state.config, &token, false))
+            .map_err(ApiError::internal)?,
+    );
+    Ok(response)
+}
+
+async fn create_session(state: &AppState, user: AuthUser) -> Result<(UserView, String), ApiError> {
+    let (token, token_hash) = new_token();
+    let now = Utc::now();
+    state
+        .connection()
+        .await?
+        .execute(
+            "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![
+                Uuid::now_v7().to_string(),
+                user.id.clone(),
+                token_hash,
+                now.to_rfc3339(),
+                (now + Duration::days(SESSION_DAYS)).to_rfc3339()
+            ],
+        )
+        .await?;
+    Ok((
+        UserView {
+            id: user.id,
+            email: user.email,
+            timezone: user.timezone,
+            email_verified: true,
+        },
+        token,
+    ))
 }
 
 #[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 200, body = MessageResponse)), security(("cookieAuth" = [])))]
@@ -640,7 +720,7 @@ pub(crate) fn session_cookie_header(
     if clear {
         cookie.push_str("; Max-Age=0");
     } else {
-        cookie.push_str(&format!("; Max-Age={}", SESSION_DAYS * 86_400));
+        cookie.push_str(&format!("; Max-Age={SESSION_MAX_AGE_SECONDS}"));
     }
     cookie
 }

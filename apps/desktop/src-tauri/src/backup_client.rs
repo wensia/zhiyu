@@ -12,7 +12,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use reqwest::{Client, Response, StatusCode, Url};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tauri::State;
+use tauri::{AppHandle, State};
 use tokio::{
     io::AsyncWriteExt,
     sync::{Mutex, RwLock},
@@ -25,6 +25,7 @@ use crate::config::{
 
 const RETENTION_DAYS: i64 = 30;
 const BACKUP_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+const SESSION_HANDOFF_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +51,29 @@ struct BackupStatus {
     last_attempt_at: Option<String>,
     last_success_at: Option<String>,
     last_error: Option<String>,
+    #[serde(default)]
+    session_handoff_error: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionFromKeyResponse {
+    session_cookie: SessionCookieResponse,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionCookieResponse {
+    name: String,
+    value: String,
+    max_age: i64,
+}
+
+pub(crate) struct SessionHandoff {
+    pub(crate) server_url: Url,
+    pub(crate) cookie_name: String,
+    pub(crate) cookie_value: String,
+    pub(crate) max_age: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -106,6 +130,45 @@ impl BackupClient {
 
     pub fn has_connection_config(&self) -> bool {
         resolve_connection(&self.config_path).is_ok()
+    }
+
+    pub(crate) fn connection_server_url(&self) -> Result<Url> {
+        Ok(resolve_connection(&self.config_path)?.server_url)
+    }
+
+    pub(crate) async fn exchange_session(&self) -> Result<SessionHandoff> {
+        let connection = resolve_connection(&self.config_path)?;
+        let url = endpoint(&connection.server_url, "api/v1/auth/session-from-key")?;
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(&connection.api_key)
+            .timeout(SESSION_HANDOFF_TIMEOUT)
+            .send()
+            .await
+            .map_err(|error| anyhow!("网络失败：无法用 api-key 换取网页登录会话：{error}"))?;
+        let response = require_success(response, "换取网页登录会话").await?;
+        let body = response
+            .json::<SessionFromKeyResponse>()
+            .await
+            .map_err(|error| anyhow!("服务器响应无效：会话交换响应不是预期 JSON：{error}"))?;
+        if body.session_cookie.name.is_empty()
+            || body.session_cookie.value.is_empty()
+            || body.session_cookie.max_age <= 0
+        {
+            bail!("服务器响应无效：会话 cookie 的名称、值或 maxAge 不正确");
+        }
+        Ok(SessionHandoff {
+            server_url: connection.server_url,
+            cookie_name: body.session_cookie.name,
+            cookie_value: body.session_cookie.value,
+            max_age: body.session_cookie.max_age,
+        })
+    }
+
+    pub(crate) async fn record_session_handoff_error(&self, error: Option<String>) {
+        self.update_status(|status| status.session_handoff_error = error)
+            .await;
     }
 
     pub fn spawn_scheduler(&self) {
@@ -432,11 +495,15 @@ impl BackupClient {
             credential_warning,
             last_pull_at: status.last_success_at,
             local_snapshot_count,
-            last_error: status.last_error,
+            last_error: status.session_handoff_error.or(status.last_error),
         }
     }
 
-    async fn save_settings(&self, input: SaveSettingsInput) -> Result<SettingsView> {
+    async fn save_settings(
+        &self,
+        input: SaveSettingsInput,
+        app: &AppHandle,
+    ) -> Result<SettingsView> {
         let server_url = validate_server_url(&input.server_url)?;
         let api_key = if input.api_key.is_empty() {
             resolve_connection(&self.config_path)
@@ -453,6 +520,7 @@ impl BackupClient {
                 tracing::error!(error = %error, "backup pull after settings save failed");
             }
         });
+        crate::handoff_main_window_session(app, self).await;
         let mut view = self.settings_view().await;
         view.credential_warning = warning;
         view.has_api_key = true;
@@ -469,9 +537,10 @@ pub async fn get_backup_settings(client: State<'_, BackupClient>) -> Result<Sett
 pub async fn save_backup_settings(
     input: SaveSettingsInput,
     client: State<'_, BackupClient>,
+    app: AppHandle,
 ) -> Result<SettingsView, String> {
     client
-        .save_settings(input)
+        .save_settings(input, &app)
         .await
         .map_err(|error| format!("{error:#}"))
 }

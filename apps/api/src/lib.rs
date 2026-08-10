@@ -77,7 +77,7 @@ impl Modify for SecurityAddon {
 #[derive(OpenApi)]
 #[openapi(
     paths(
-        auth::register, auth::verify_email, auth::resend_verification, auth::login,
+        auth::register, auth::verify_email, auth::resend_verification, auth::login, auth::session_from_key,
         auth::logout, auth::me, auth::forgot_password, auth::reset_password,
         debts::list_debts, debts::get_debt, debts::create_debt, debts::update_debt,
         debts::archive_debt, debts::restore_debt, debts::delete_debt,
@@ -92,7 +92,8 @@ impl Modify for SecurityAddon {
         backup::list_backups, backup::backup_status, backup::download_backup
     ),
     components(schemas(
-        domain::UserView, domain::RegisterRequest, domain::LoginRequest, domain::EmailRequest,
+        domain::UserView, auth::SessionFromKeyResponse, auth::SessionCookieView,
+        domain::RegisterRequest, domain::LoginRequest, domain::EmailRequest,
         domain::TokenRequest, domain::ResetPasswordRequest, domain::MessageResponse,
         domain::DebtDirection, domain::DebtStatus, domain::DebtOriginKind, domain::CounterpartyView,
         domain::RepaymentEventView, domain::DebtAdditionEventView, domain::DebtView, domain::CounterpartyBrief,
@@ -119,6 +120,7 @@ pub fn app(state: AppState) -> Router {
         .route("/auth/verify-email", post(auth::verify_email))
         .route("/auth/resend-verification", post(auth::resend_verification))
         .route("/auth/login", post(auth::login))
+        .route("/auth/session-from-key", post(auth::session_from_key))
         .route("/auth/logout", post(auth::logout))
         .route("/auth/me", get(auth::me))
         .route("/auth/forgot-password", post(auth::forgot_password))
@@ -257,7 +259,10 @@ async fn csrf_guard(
     mut request: Request<Body>,
     next: Next,
 ) -> Response {
-    let session_token = auth::cookie_value(request.headers(), state.config.cookie_name());
+    let bearer_only = request.uri().path() == "/api/v1/auth/session-from-key";
+    let session_token = (!bearer_only)
+        .then(|| auth::cookie_value(request.headers(), state.config.cookie_name()))
+        .flatten();
     let mut auth_context = None;
     let authenticated_token = if let Some(token) = session_token {
         match auth::authenticate_session_token(&state, &token).await {

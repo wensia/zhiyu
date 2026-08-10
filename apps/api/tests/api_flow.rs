@@ -218,6 +218,132 @@ async fn valid_api_key_authenticates_and_is_not_stored_in_plaintext() {
 }
 
 #[tokio::test]
+async fn api_key_can_issue_a_self_host_session_cookie() {
+    let test = TestApp::self_host().await;
+    let key = auth::issue_api_key(&test.state, "desktop@zhiyu.local")
+        .await
+        .unwrap();
+
+    let (status, headers, body) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["email"], "desktop@zhiyu.local");
+    assert_eq!(body["sessionCookie"]["name"], "__Host-zhiyu_session");
+    assert_eq!(body["sessionCookie"]["maxAge"], 30 * 86_400);
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(cookie.starts_with("__Host-zhiyu_session="));
+    assert!(cookie.contains("; Path=/"));
+    assert!(cookie.contains("; HttpOnly"));
+    assert!(cookie.contains("; SameSite=Lax"));
+    assert!(cookie.contains("; Secure"));
+    assert!(!cookie.contains("Domain="));
+}
+
+#[tokio::test]
+async fn session_from_key_rejects_invalid_and_empty_api_keys() {
+    let test = TestApp::new().await;
+
+    for authorization in ["Bearer definitely-invalid", "Bearer "] {
+        let (status, _, body) = send_with_authorization(
+            &test.router,
+            Method::POST,
+            "/api/v1/auth/session-from-key",
+            None,
+            authorization,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "unauthorized");
+    }
+}
+
+#[tokio::test]
+async fn session_from_key_does_not_accept_a_session_cookie() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("cookie-only@zhiyu.local").await;
+
+    let (status, _, body) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn session_from_key_bearer_request_does_not_require_origin() {
+    let test = TestApp::self_host().await;
+    let key = auth::issue_api_key(&test.state, "no-origin@zhiyu.local")
+        .await
+        .unwrap();
+
+    let (status, _, _) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn session_from_key_issued_cookie_authenticates_later_requests() {
+    let test = TestApp::self_host().await;
+    let key = auth::issue_api_key(&test.state, "session-user@zhiyu.local")
+        .await
+        .unwrap();
+    let (status, _, body) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = format!(
+        "{}={}",
+        body["sessionCookie"]["name"].as_str().unwrap(),
+        body["sessionCookie"]["value"].as_str().unwrap()
+    );
+
+    let (status, _, user) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(user["email"], "session-user@zhiyu.local");
+}
+
+#[tokio::test]
 async fn invalid_api_key_is_rejected() {
     let test = TestApp::new().await;
     let (status, _, body) = send_with_authorization(
