@@ -16,17 +16,19 @@ use axum::{
     Json, Router,
     body::Body,
     extract::{Request, State},
-    http::{Method, StatusCode, header},
+    http::{HeaderValue, Method, StatusCode, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::{get, patch, post},
 };
 use libsql::Database;
 use serde_json::json;
+use tower::ServiceBuilder;
 use tower_http::{
     catch_panic::CatchPanicLayer,
     request_id::{MakeRequestUuid, PropagateRequestIdLayer, SetRequestIdLayer},
     services::{ServeDir, ServeFile},
+    set_header::SetResponseHeaderLayer,
     trace::TraceLayer,
 };
 use utoipa::{
@@ -181,9 +183,29 @@ pub fn app(state: AppState) -> Router {
         .route("/backups/status", get(backup::backup_status))
         .route("/backups/{id}", get(backup::download_backup));
 
+    // 静态资源必须显式声明缓存策略。tower-http 默认什么都不设，客户端于是退回
+    // 启发式缓存——按 (now - last_modified) * 10% 自行推算过期时间。实测中 WKWebView
+    // 因此长期持有旧 index.html，服务端换了新 bundle 也不会被发现，每次部署都要手动
+    // 清缓存才能生效。
+    //
+    // 两类资源的策略相反，必须分开挂载：
+    //   assets/*  文件名带内容 hash，内容变则文件名变，可以永久缓存
+    //   其余      index.html 是新 bundle 的唯一入口，必须每次回源验证
+    // no-cache 不是「不缓存」，而是「可缓存但每次需重新验证」，配合 last-modified
+    // 仍能返回 304，不会浪费带宽。
     let index = state.config.web_dist_dir.join("index.html");
-    let static_files =
-        ServeDir::new(state.config.web_dist_dir.clone()).fallback(ServeFile::new(index));
+    let hashed_assets = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("public, max-age=31536000, immutable"),
+        ))
+        .service(ServeDir::new(state.config.web_dist_dir.join("assets")));
+    let static_files = ServiceBuilder::new()
+        .layer(SetResponseHeaderLayer::overriding(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache"),
+        ))
+        .service(ServeDir::new(state.config.web_dist_dir.clone()).fallback(ServeFile::new(index)));
 
     Router::new()
         .route(
@@ -196,6 +218,7 @@ pub fn app(state: AppState) -> Router {
             get(|| async { Json(ApiDoc::openapi()) }),
         )
         .nest("/api/v1", api)
+        .nest_service("/assets", hashed_assets)
         .fallback_service(static_files)
         .layer(middleware::from_fn_with_state(state.clone(), csrf_guard))
         .layer(PropagateRequestIdLayer::x_request_id())

@@ -2813,3 +2813,53 @@ async fn send_with_credentials(
     };
     (status, headers, body)
 }
+
+/// 静态资源的缓存策略必须显式声明。tower-http 默认什么都不设，客户端会退回启发式
+/// 缓存（按 last-modified 自行推算过期时间），实测导致 WKWebView 长期持有旧
+/// index.html，服务端换了新 bundle 也不被发现，每次部署都要手动清缓存。
+/// 两类资源策略相反，这里把它们钉死。
+#[tokio::test]
+async fn static_assets_declare_cache_policy() {
+    let test = TestApp::new().await;
+    let dist = test.state.config.web_dist_dir.clone();
+    std::fs::create_dir_all(dist.join("assets")).unwrap();
+    std::fs::write(dist.join("index.html"), "<!doctype html>").unwrap();
+    std::fs::write(dist.join("assets/index-abc123.js"), "console.log(1)").unwrap();
+
+    // 文件名带内容 hash，内容变则文件名变，可以永久缓存。
+    let response = test
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/assets/index-abc123.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=31536000, immutable"),
+    );
+
+    // index.html 是新 bundle 的唯一入口，必须每次回源验证。
+    let response = test
+        .router
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache"),
+    );
+}
