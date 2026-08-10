@@ -1,22 +1,43 @@
 //! 数据库快照：备份链路里与「投递到哪」无关的那一半。
 //!
-//! 桌面版把快照提交进 git 仓库，服务器版由宿主机接手，但两边生成快照的方式必须
-//! 完全一致——一致快照、两道校验、内容哈希、先写临时文件。投递方式由调用方决定，
-//! 本模块只负责产出一份**可信**的快照。
+//! API 进程在这里产出并保留一份**可信**的快照：一致快照、两道校验、内容哈希、
+//! 先写临时文件再原子发布。桌面端只下载已发布快照，不接触在线数据库。
 //!
 //! 为什么是整库快照而不是按表导出文本：恢复目标是「一个满足全部约束、能继续记账
 //! 的数据库」，不是「一批人类可读的记录」。逻辑导出要自行处理 NULL/BLOB/排序/外键
 //! 装载顺序/视图/迁移版本，任何一处遗漏都可能让恢复出来的账本在语法上完好、在业务
 //! 上错乱（悬空的撤销链、丢失的幂等记录）。原生快照恢复时不重新解释任何业务数据。
 
-use std::path::{Path, PathBuf};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    time::Duration as StdDuration,
+};
 
-use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use anyhow::{Context, Result, anyhow, bail};
+use axum::{
+    Json,
+    body::Body,
+    extract::{Path as AxumPath, State},
+    http::{StatusCode, header},
+    response::Response,
+};
+use chrono::{DateTime, SecondsFormat, Utc};
 use libsql::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::sync::RwLock;
+use tokio_util::io::ReaderStream;
+use utoipa::ToSchema;
 use uuid::Uuid;
+use zhiyu_backup_policy::{Snapshot as RetentionSnapshot, plan_retention};
+
+use crate::{AppState, auth::AuthUser, config::Config, error::ApiError};
+
+pub const BACKUP_RETENTION_DAYS: i64 = 30;
+pub const SNAPSHOT_FILE_PREFIX: &str = "zhiyu-";
+pub const SNAPSHOT_FILE_SUFFIX: &str = ".db";
+pub const MANIFEST_FILE_SUFFIX: &str = ".manifest.json";
 
 /// 快照旁边那份 manifest 的格式版本。恢复时先看它，不认识就直接拒绝。
 pub const BACKUP_FORMAT_VERSION: u32 = 1;
@@ -37,6 +58,368 @@ pub struct Manifest {
     pub source_journal_mode: String,
     pub integrity_check: String,
     pub foreign_key_violation_count: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ManagedSnapshot {
+    pub id: String,
+    pub created_at: DateTime<Utc>,
+    pub database_path: PathBuf,
+    pub manifest_path: PathBuf,
+    pub manifest: Manifest,
+}
+
+#[derive(Debug, Clone, Default, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupRuntimeStatus {
+    pub running: bool,
+    pub last_attempt_at: Option<String>,
+    pub last_success_at: Option<String>,
+    pub latest_snapshot_id: Option<String>,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct BackupStatusStore(Arc<RwLock<BackupRuntimeStatus>>);
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupListItem {
+    pub id: String,
+    pub created_at: String,
+    pub size: u64,
+    pub sha256: String,
+    pub schema_version: i64,
+}
+
+impl BackupStatusStore {
+    pub async fn get(&self) -> BackupRuntimeStatus {
+        self.0.read().await.clone()
+    }
+
+    async fn started(&self, now: DateTime<Utc>) {
+        let mut status = self.0.write().await;
+        status.running = true;
+        status.last_attempt_at = Some(now.to_rfc3339());
+    }
+
+    async fn succeeded(&self, now: DateTime<Utc>, latest_snapshot_id: Option<String>) {
+        let mut status = self.0.write().await;
+        status.running = false;
+        status.last_success_at = Some(now.to_rfc3339());
+        status.latest_snapshot_id = latest_snapshot_id;
+        status.last_error = None;
+    }
+
+    async fn failed(&self, error: &anyhow::Error) {
+        let mut status = self.0.write().await;
+        status.running = false;
+        status.last_error = Some(format!("{error:#}"));
+    }
+}
+
+pub fn backup_directory(config: &Config) -> Result<PathBuf> {
+    if config.database_url.starts_with("libsql://") || config.database_url.starts_with("https://") {
+        bail!("远程 DATABASE_URL 无法生成本地 SQLite 快照");
+    }
+    let database_path = config
+        .database_url
+        .strip_prefix("file:")
+        .unwrap_or(&config.database_url);
+    if database_path == ":memory:" {
+        bail!("内存数据库没有可用于备份的数据目录");
+    }
+    let parent = Path::new(database_path)
+        .parent()
+        .context("DATABASE_URL 没有数据目录")?;
+    Ok(parent.join("backups"))
+}
+
+pub fn snapshot_id_at(now: DateTime<Utc>) -> String {
+    now.to_rfc3339_opts(SecondsFormat::Secs, true)
+}
+
+pub fn parse_snapshot_id(id: &str) -> Result<DateTime<Utc>> {
+    if id.len() != 20 {
+        bail!("备份 ID 格式不正确");
+    }
+    let parsed = DateTime::parse_from_rfc3339(id)
+        .context("备份 ID 不是 RFC3339 时间戳")?
+        .with_timezone(&Utc);
+    if snapshot_id_at(parsed) != id {
+        bail!("备份 ID 不是规范 UTC 时间戳");
+    }
+    Ok(parsed)
+}
+
+pub async fn list_managed_snapshots(backup_dir: &Path) -> Result<Vec<ManagedSnapshot>> {
+    tokio::fs::create_dir_all(backup_dir)
+        .await
+        .with_context(|| format!("无法创建备份目录 {}", backup_dir.display()))?;
+    let mut entries = tokio::fs::read_dir(backup_dir)
+        .await
+        .with_context(|| format!("无法读取备份目录 {}", backup_dir.display()))?;
+    let mut snapshots = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let Some(id) = file_name
+            .strip_prefix(SNAPSHOT_FILE_PREFIX)
+            .and_then(|value| value.strip_suffix(MANIFEST_FILE_SUFFIX))
+        else {
+            continue;
+        };
+        let id_created_at =
+            parse_snapshot_id(id).with_context(|| format!("备份清单文件名不合法：{file_name}"))?;
+        let manifest_path = entry.path();
+        let manifest: Manifest = serde_json::from_slice(
+            &tokio::fs::read(&manifest_path)
+                .await
+                .with_context(|| format!("无法读取备份清单 {}", manifest_path.display()))?,
+        )
+        .with_context(|| format!("备份清单不是有效 JSON：{}", manifest_path.display()))?;
+        let created_at = DateTime::parse_from_rfc3339(&manifest.created_at_utc)
+            .context("备份清单 createdAtUtc 不是 RFC3339 时间戳")?
+            .with_timezone(&Utc);
+        if created_at != id_created_at {
+            bail!("备份清单时间与文件名不一致：{file_name}");
+        }
+        let database_path =
+            backup_dir.join(format!("{SNAPSHOT_FILE_PREFIX}{id}{SNAPSHOT_FILE_SUFFIX}"));
+        let actual_size = tokio::fs::metadata(&database_path)
+            .await
+            .with_context(|| format!("备份快照不存在：{}", database_path.display()))?
+            .len();
+        if actual_size != manifest.database_size_bytes {
+            bail!(
+                "备份快照长度不匹配：{}（清单 {}，实际 {}）",
+                database_path.display(),
+                manifest.database_size_bytes,
+                actual_size
+            );
+        }
+        snapshots.push(ManagedSnapshot {
+            id: id.to_owned(),
+            created_at,
+            database_path,
+            manifest_path,
+            manifest,
+        });
+    }
+    snapshots.sort_by(|left, right| {
+        right
+            .created_at
+            .cmp(&left.created_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
+    Ok(snapshots)
+}
+
+async fn sync_file(path: &Path) -> Result<()> {
+    tokio::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .await?
+        .sync_all()
+        .await?;
+    Ok(())
+}
+
+pub async fn create_managed_snapshot(
+    db: &Database,
+    backup_dir: &Path,
+    now: DateTime<Utc>,
+) -> Result<ManagedSnapshot> {
+    tokio::fs::create_dir_all(backup_dir).await?;
+    let id = snapshot_id_at(now);
+    let database_path =
+        backup_dir.join(format!("{SNAPSHOT_FILE_PREFIX}{id}{SNAPSHOT_FILE_SUFFIX}"));
+    let manifest_path =
+        backup_dir.join(format!("{SNAPSHOT_FILE_PREFIX}{id}{MANIFEST_FILE_SUFFIX}"));
+    if database_path.exists() || manifest_path.exists() {
+        bail!("同一秒的备份已经存在：{id}");
+    }
+
+    let staging_dir = backup_dir.join(".staging");
+    let (staged_database, mut manifest) =
+        create_snapshot(db, &staging_dir, env!("CARGO_PKG_VERSION")).await?;
+    manifest.created_at_utc = id.clone();
+    sync_file(&staged_database).await?;
+
+    let staged_manifest = staging_dir.join(format!("manifest-{}.partial", Uuid::now_v7()));
+    tokio::fs::write(&staged_manifest, serde_json::to_vec_pretty(&manifest)?).await?;
+    sync_file(&staged_manifest).await?;
+    tokio::fs::rename(&staged_database, &database_path)
+        .await
+        .context("无法原子发布备份快照")?;
+    if let Err(error) = tokio::fs::rename(&staged_manifest, &manifest_path).await {
+        tokio::fs::remove_file(&database_path).await.ok();
+        return Err(error).context("无法原子发布备份清单");
+    }
+
+    Ok(ManagedSnapshot {
+        id,
+        created_at: now,
+        database_path,
+        manifest_path,
+        manifest,
+    })
+}
+
+async fn apply_retention(backup_dir: &Path, now: DateTime<Utc>) -> Result<Vec<ManagedSnapshot>> {
+    let snapshots = list_managed_snapshots(backup_dir).await?;
+    let candidates = snapshots
+        .iter()
+        .map(|snapshot| RetentionSnapshot {
+            id: snapshot.id.clone(),
+            created_at: snapshot.created_at,
+        })
+        .collect::<Vec<_>>();
+    let plan = plan_retention(&candidates, now, BACKUP_RETENTION_DAYS);
+    for expired in plan.delete {
+        let snapshot = snapshots
+            .iter()
+            .find(|snapshot| snapshot.id == expired.id)
+            .ok_or_else(|| anyhow!("保留策略返回了未知快照 {}", expired.id))?;
+        tokio::fs::remove_file(&snapshot.manifest_path)
+            .await
+            .with_context(|| format!("无法删除过期清单 {}", snapshot.manifest_path.display()))?;
+        tokio::fs::remove_file(&snapshot.database_path)
+            .await
+            .with_context(|| format!("无法删除过期快照 {}", snapshot.database_path.display()))?;
+    }
+    list_managed_snapshots(backup_dir).await
+}
+
+pub async fn run_backup_cycle(state: &AppState, now: DateTime<Utc>) -> Result<()> {
+    state.backup_status.started(now).await;
+    let result = async {
+        let backup_dir = backup_directory(&state.config)?;
+        let existing = list_managed_snapshots(&backup_dir).await?;
+        if !existing
+            .iter()
+            .any(|snapshot| snapshot.created_at.date_naive() == now.date_naive())
+        {
+            create_managed_snapshot(&state.db, &backup_dir, now).await?;
+        }
+        let retained = apply_retention(&backup_dir, now).await?;
+        Ok::<_, anyhow::Error>(retained.first().map(|snapshot| snapshot.id.clone()))
+    }
+    .await;
+
+    match result {
+        Ok(latest_snapshot_id) => {
+            state.backup_status.succeeded(now, latest_snapshot_id).await;
+            Ok(())
+        }
+        Err(error) => {
+            tracing::error!(error = %error, "scheduled database backup failed");
+            state.backup_status.failed(&error).await;
+            Err(error)
+        }
+    }
+}
+
+pub fn spawn_backup_scheduler(state: AppState) {
+    tokio::spawn(async move {
+        loop {
+            let _ = run_backup_cycle(&state, Utc::now()).await;
+            tokio::time::sleep(StdDuration::from_secs(60 * 60)).await;
+        }
+    });
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups",
+    responses((status = 200, body = [BackupListItem]), (status = 401, body = crate::error::ErrorBody)),
+    security(("cookieAuth" = []), ("bearerAuth" = []))
+)]
+pub async fn list_backups(
+    State(state): State<AppState>,
+    _user: AuthUser,
+) -> Result<Json<Vec<BackupListItem>>, ApiError> {
+    let backup_dir = backup_directory(&state.config).map_err(ApiError::internal)?;
+    let snapshots = list_managed_snapshots(&backup_dir)
+        .await
+        .map_err(ApiError::internal)?;
+    Ok(Json(
+        snapshots
+            .into_iter()
+            .map(|snapshot| BackupListItem {
+                id: snapshot.id,
+                created_at: snapshot.manifest.created_at_utc,
+                size: snapshot.manifest.database_size_bytes,
+                sha256: snapshot.manifest.database_sha256,
+                schema_version: snapshot
+                    .manifest
+                    .schema_migration_versions
+                    .last()
+                    .copied()
+                    .unwrap_or_default(),
+            })
+            .collect(),
+    ))
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups/status",
+    responses((status = 200, body = BackupRuntimeStatus), (status = 401, body = crate::error::ErrorBody)),
+    security(("cookieAuth" = []), ("bearerAuth" = []))
+)]
+pub async fn backup_status(
+    State(state): State<AppState>,
+    _user: AuthUser,
+) -> Json<BackupRuntimeStatus> {
+    Json(state.backup_status.get().await)
+}
+
+#[utoipa::path(
+    get,
+    path = "/api/v1/backups/{id}",
+    params(("id" = String, Path)),
+    responses(
+        (status = 200, content_type = "application/octet-stream"),
+        (status = 400, body = crate::error::ErrorBody),
+        (status = 401, body = crate::error::ErrorBody),
+        (status = 404, body = crate::error::ErrorBody)
+    ),
+    security(("cookieAuth" = []), ("bearerAuth" = []))
+)]
+pub async fn download_backup(
+    State(state): State<AppState>,
+    AxumPath(id): AxumPath<String>,
+    _user: AuthUser,
+) -> Result<Response, ApiError> {
+    parse_snapshot_id(&id)
+        .map_err(|_| ApiError::bad_request("invalid_backup_id", "备份 ID 格式不正确"))?;
+    let backup_dir = backup_directory(&state.config).map_err(ApiError::internal)?;
+    let snapshots = list_managed_snapshots(&backup_dir)
+        .await
+        .map_err(ApiError::internal)?;
+    let snapshot = snapshots
+        .into_iter()
+        .find(|snapshot| snapshot.id == id)
+        .ok_or_else(|| ApiError::not_found("备份不存在"))?;
+    check_against_manifest(&snapshot.database_path, &snapshot.manifest)
+        .await
+        .map_err(ApiError::internal)?;
+    let file = tokio::fs::File::open(&snapshot.database_path)
+        .await
+        .map_err(ApiError::internal)?;
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/octet-stream")
+        .header(
+            header::CONTENT_LENGTH,
+            snapshot.manifest.database_size_bytes,
+        )
+        .header(header::CACHE_CONTROL, "no-store")
+        .body(Body::from_stream(ReaderStream::new(file)))
+        .map_err(ApiError::internal)
 }
 
 /// 生成一份经过校验的快照，返回快照文件路径与其 manifest。
@@ -283,139 +666,11 @@ async fn quarantine_database_group(live_db: &Path, quarantine: &Path) -> Result<
     Ok(())
 }
 
-/// 备份仓库里那两个权威文件的位置。始终覆盖同一路径，版本由 git 历史承担——
-/// 按时间戳堆文件会让仓库里塞满成千上万个几乎相同的数据库。
+/// 备份目录里快照和清单的固定位置。
 pub const SNAPSHOT_IN_REPO: &str = "data/ledger.sqlite3";
 pub const MANIFEST_IN_REPO: &str = "data/manifest.json";
 /// 暂存目录放在仓库内，保证 rename 不跨文件系统——跨文件系统的 rename 不是原子的。
 pub const STAGING_IN_REPO: &str = ".staging";
-
-/// 一次投递的结果。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Committed {
-    /// 内容与上一次提交完全相同，没有产生空提交。
-    Unchanged,
-    /// 产生了新提交，附 commit id。
-    New(String),
-}
-
-/// 把已校验的快照放进备份仓库并提交。
-///
-/// 这里只做到本地 commit。**本地 commit 不等于异地备份**——磁盘坏了，没推上去的
-/// commit 跟着一起没。对用户展示「已备份」必须等 [`push`] 确认远端。
-pub async fn commit_snapshot(
-    repo: &Path,
-    snapshot: &Path,
-    manifest: &Manifest,
-) -> Result<Committed> {
-    // manifest 自带生成时间，每次都不一样，所以不能靠「文件有没有变」来判断要不要
-    // 提交——只有数据库内容哈希说了算。否则每次触发都会留下一条只有时间戳不同的
-    // 空提交。
-    if let Ok(existing) = tokio::fs::read(repo.join(MANIFEST_IN_REPO)).await
-        && let Ok(previous) = serde_json::from_slice::<Manifest>(&existing)
-        && previous.database_sha256 == manifest.database_sha256
-    {
-        tokio::fs::remove_file(snapshot).await.ok();
-        return Ok(Committed::Unchanged);
-    }
-
-    let data_dir = repo.join("data");
-    tokio::fs::create_dir_all(&data_dir).await?;
-
-    // 先落 manifest 再落数据库：两者都就位前不 add，中途失败也不会提交出
-    // 「新库配旧 manifest」这种自相矛盾的组合。
-    let manifest_json = serde_json::to_vec_pretty(manifest)?;
-    tokio::fs::write(repo.join(MANIFEST_IN_REPO), manifest_json).await?;
-    tokio::fs::rename(snapshot, repo.join(SNAPSHOT_IN_REPO)).await?;
-
-    git(repo, &["add", "--", "data"]).await?;
-    // 暂存区没有差异就不要制造空提交，否则每次触发都在历史里留一条噪声。
-    if git_status(repo, &["diff", "--cached", "--quiet"])
-        .await?
-        .success
-    {
-        return Ok(Committed::Unchanged);
-    }
-    let message = format!("backup: {}", manifest.created_at_utc);
-    git(repo, &["commit", "--quiet", "-m", &message]).await?;
-    let id = git(repo, &["rev-parse", "HEAD"]).await?;
-    Ok(Committed::New(id.trim().to_owned()))
-}
-
-/// 推送到远端，并核对远端 HEAD 确实等于本地 HEAD。
-///
-/// 只允许快进。远端出现本地不知道的提交，在单写者模型下意味着另一台机器还在推、
-/// 或仓库被人动过——那是 split-brain，必须停下来报警，绝不能自动 pull/merge/rebase：
-/// 两份 SQLite 快照之间不存在有意义的自动合并，「解决冲突」等于随机挑一个数据库。
-pub async fn push(repo: &Path, remote: &str, branch: &str) -> Result<()> {
-    let local = git(repo, &["rev-parse", "HEAD"]).await?.trim().to_owned();
-    let remote_ref = format!("{remote}/{branch}");
-
-    // 首次备份时远端还没有这个分支，fetch 失败是预期内的，不代表出错。
-    git_status(repo, &["fetch", "--quiet", remote, branch]).await?;
-    if let Ok(remote_head) = git(repo, &["rev-parse", &remote_ref]).await {
-        let remote_head = remote_head.trim();
-        if remote_head != local {
-            let ancestor =
-                git_status(repo, &["merge-base", "--is-ancestor", remote_head, &local]).await?;
-            if !ancestor.success {
-                bail!(
-                    "远端 {remote_ref} 有本地不存在的提交（{remote_head}），备份已停止。\
-                     单写者模式下这通常意味着另一个实例也在推送，请人工确认后再继续。"
-                );
-            }
-        }
-    }
-
-    git(
-        repo,
-        &["push", "--quiet", remote, &format!("HEAD:{branch}")],
-    )
-    .await?;
-
-    // push 的退出码不足以证明远端就是我们这一版，回读一次才算数。
-    git(repo, &["fetch", "--quiet", remote, branch]).await?;
-    let confirmed = git(repo, &["rev-parse", &remote_ref]).await?;
-    if confirmed.trim() != local {
-        bail!("推送后远端 HEAD 仍不等于本地 HEAD，无法确认备份已到达远端");
-    }
-    Ok(())
-}
-
-struct GitStatus {
-    success: bool,
-}
-
-async fn git_status(repo: &Path, args: &[&str]) -> Result<GitStatus> {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .await
-        .context("无法执行 git，请确认它已安装")?;
-    Ok(GitStatus {
-        success: output.status.success(),
-    })
-}
-
-async fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let output = tokio::process::Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .await
-        .context("无法执行 git，请确认它已安装")?;
-    if !output.status.success() {
-        bail!(
-            "git {} 失败：{}",
-            args.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-}
 
 async fn scalar_text(conn: &libsql::Connection, sql: &str) -> Result<String> {
     let mut rows = conn.query(sql, ()).await?;
@@ -429,6 +684,7 @@ async fn scalar_text(conn: &libsql::Connection, sql: &str) -> Result<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{email::DevFileEmailSender, rate_limit::RateLimiter};
 
     async fn application_db(path: &Path) -> Database {
         let db = libsql::Builder::new_local(path).build().await.unwrap();
@@ -487,6 +743,26 @@ mod tests {
         db
     }
 
+    async fn test_state(root: &Path) -> AppState {
+        let config = Config {
+            app_env: "test".into(),
+            bind_addr: "127.0.0.1:0".parse().unwrap(),
+            public_base_url: "http://test.local".into(),
+            database_url: format!("file:{}", root.join("live.db").display()),
+            turso_auth_token: None,
+            dev_mail_dir: root.join("mail"),
+            web_dist_dir: root.join("web"),
+        };
+        let db = crate::db::connect(&config).await.unwrap();
+        AppState {
+            db: Arc::new(db),
+            email: Arc::new(DevFileEmailSender::new(config.dev_mail_dir.clone())),
+            config: Arc::new(config),
+            rate_limiter: RateLimiter::default(),
+            backup_status: BackupStatusStore::default(),
+        }
+    }
+
     #[tokio::test]
     async fn snapshot_is_verified_and_hashed() {
         let dir = tempfile::tempdir().unwrap();
@@ -542,178 +818,6 @@ mod tests {
         assert!(first.exists() && second.exists());
     }
 
-    async fn init_repo(path: &Path) {
-        tokio::fs::create_dir_all(path).await.unwrap();
-        for args in [
-            vec!["init", "--quiet", "--initial-branch", "main"],
-            vec!["config", "user.email", "test@example.com"],
-            vec!["config", "user.name", "test"],
-        ] {
-            git(path, &args).await.unwrap();
-        }
-    }
-
-    #[tokio::test]
-    async fn commit_then_skip_when_unchanged() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = seeded_db(dir.path()).await;
-        let repo = dir.path().join("backup-repo");
-        init_repo(&repo).await;
-        let staging = repo.join(STAGING_IN_REPO);
-
-        let (snap, manifest) = create_snapshot(&db, &staging, "test").await.unwrap();
-        let first = commit_snapshot(&repo, &snap, &manifest).await.unwrap();
-        assert!(matches!(first, Committed::New(_)));
-        assert!(repo.join(SNAPSHOT_IN_REPO).exists());
-        assert!(repo.join(MANIFEST_IN_REPO).exists());
-
-        // 数据没变，再备份一次不该产生第二个 commit。manifest 的时间戳每次都不同，
-        // 所以这里同时验证了「不能只看 manifest 有没有变」。
-        let (snap2, manifest2) = create_snapshot(&db, &staging, "test").await.unwrap();
-        let second = commit_snapshot(&repo, &snap2, &manifest2).await.unwrap();
-        assert_eq!(second, Committed::Unchanged, "空提交没有被挡住");
-    }
-
-    #[tokio::test]
-    async fn commit_after_real_write() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = seeded_db(dir.path()).await;
-        let repo = dir.path().join("backup-repo");
-        init_repo(&repo).await;
-        let staging = repo.join(STAGING_IN_REPO);
-
-        let (snap, manifest) = create_snapshot(&db, &staging, "test").await.unwrap();
-        commit_snapshot(&repo, &snap, &manifest).await.unwrap();
-
-        db.connect()
-            .unwrap()
-            .execute("INSERT INTO debts VALUES('b', 500)", ())
-            .await
-            .unwrap();
-
-        let (snap2, manifest2) = create_snapshot(&db, &staging, "test").await.unwrap();
-        assert_ne!(manifest.database_sha256, manifest2.database_sha256);
-        let outcome = commit_snapshot(&repo, &snap2, &manifest2).await.unwrap();
-        assert!(matches!(outcome, Committed::New(_)));
-    }
-
-    #[tokio::test]
-    async fn push_confirms_remote_head() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = seeded_db(dir.path()).await;
-        let repo = dir.path().join("backup-repo");
-        let remote = dir.path().join("remote.git");
-        init_repo(&repo).await;
-        git(
-            dir.path(),
-            &[
-                "init",
-                "--quiet",
-                "--bare",
-                "--initial-branch",
-                "main",
-                remote.to_str().unwrap(),
-            ],
-        )
-        .await
-        .unwrap();
-        git(
-            &repo,
-            &["remote", "add", "origin", remote.to_str().unwrap()],
-        )
-        .await
-        .unwrap();
-
-        let staging = repo.join(STAGING_IN_REPO);
-        let (snap, manifest) = create_snapshot(&db, &staging, "test").await.unwrap();
-        commit_snapshot(&repo, &snap, &manifest).await.unwrap();
-
-        push(&repo, "origin", "main").await.unwrap();
-        let local = git(&repo, &["rev-parse", "HEAD"]).await.unwrap();
-        let remote_head = git(&repo, &["rev-parse", "origin/main"]).await.unwrap();
-        assert_eq!(local.trim(), remote_head.trim());
-    }
-
-    #[tokio::test]
-    async fn push_refuses_when_remote_diverged() {
-        let dir = tempfile::tempdir().unwrap();
-        let db = seeded_db(dir.path()).await;
-        let repo = dir.path().join("backup-repo");
-        let other = dir.path().join("other-writer");
-        let remote = dir.path().join("remote.git");
-        init_repo(&repo).await;
-        git(
-            dir.path(),
-            &[
-                "init",
-                "--quiet",
-                "--bare",
-                "--initial-branch",
-                "main",
-                remote.to_str().unwrap(),
-            ],
-        )
-        .await
-        .unwrap();
-        git(
-            &repo,
-            &["remote", "add", "origin", remote.to_str().unwrap()],
-        )
-        .await
-        .unwrap();
-
-        let staging = repo.join(STAGING_IN_REPO);
-        let (snap, manifest) = create_snapshot(&db, &staging, "test").await.unwrap();
-        commit_snapshot(&repo, &snap, &manifest).await.unwrap();
-        push(&repo, "origin", "main").await.unwrap();
-
-        // 另一台机器往同一个远端推了一版——这就是 split-brain。
-        git(
-            dir.path(),
-            &[
-                "clone",
-                "--quiet",
-                remote.to_str().unwrap(),
-                other.to_str().unwrap(),
-            ],
-        )
-        .await
-        .unwrap();
-        git(&other, &["config", "user.email", "other@example.com"])
-            .await
-            .unwrap();
-        git(&other, &["config", "user.name", "other"])
-            .await
-            .unwrap();
-        tokio::fs::write(
-            other.join("data/manifest.json"),
-            b"{\"from\":\"other machine\"}",
-        )
-        .await
-        .unwrap();
-        git(&other, &["commit", "--quiet", "-am", "other writer"])
-            .await
-            .unwrap();
-        git(&other, &["push", "--quiet", "origin", "main"])
-            .await
-            .unwrap();
-
-        db.connect()
-            .unwrap()
-            .execute("INSERT INTO debts VALUES('c', 900)", ())
-            .await
-            .unwrap();
-        let (snap2, manifest2) = create_snapshot(&db, &staging, "test").await.unwrap();
-        commit_snapshot(&repo, &snap2, &manifest2).await.unwrap();
-
-        let error = push(&repo, "origin", "main").await.unwrap_err();
-        assert!(
-            error.to_string().contains("split-brain")
-                || error.to_string().contains("有本地不存在的提交"),
-            "未能识别为 split-brain：{error}"
-        );
-    }
-
     #[tokio::test]
     async fn tampered_snapshot_is_rejected() {
         let dir = tempfile::tempdir().unwrap();
@@ -729,6 +833,50 @@ mod tests {
 
         let error = check_against_manifest(&path, &manifest).await.unwrap_err();
         assert!(error.to_string().contains("哈希与 manifest 不一致"));
+    }
+
+    #[tokio::test]
+    async fn startup_cycle_backfills_once_and_publishes_verified_pair() {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_state(root.path()).await;
+        let now = "2026-08-10T02:03:04Z".parse().unwrap();
+
+        run_backup_cycle(&state, now).await.unwrap();
+        run_backup_cycle(&state, "2026-08-10T20:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+
+        let backup_dir = backup_directory(&state.config).unwrap();
+        let snapshots = list_managed_snapshots(&backup_dir).await.unwrap();
+        assert_eq!(snapshots.len(), 1);
+        assert_eq!(snapshots[0].id, "2026-08-10T02:03:04Z");
+        check_against_manifest(&snapshots[0].database_path, &snapshots[0].manifest)
+            .await
+            .unwrap();
+        let status = state.backup_status.get().await;
+        assert!(!status.running);
+        assert_eq!(
+            status.latest_snapshot_id.as_deref(),
+            Some("2026-08-10T02:03:04Z")
+        );
+        assert!(status.last_error.is_none());
+    }
+
+    #[tokio::test]
+    async fn filesystem_retention_never_deletes_the_only_successful_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let db = seeded_db(root.path()).await;
+        let backup_dir = root.path().join("backups");
+        create_managed_snapshot(&db, &backup_dir, "2026-01-01T00:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+
+        let retained = apply_retention(&backup_dir, "2026-08-10T00:00:00Z".parse().unwrap())
+            .await
+            .unwrap();
+
+        assert_eq!(retained.len(), 1);
+        assert_eq!(retained[0].id, "2026-01-01T00:00:00Z");
     }
 
     #[tokio::test]

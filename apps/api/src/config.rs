@@ -44,7 +44,11 @@ impl Config {
     }
 
     pub fn is_production(&self) -> bool {
-        self.app_env == "production"
+        matches!(self.app_env.as_str(), "production" | "self-host")
+    }
+
+    pub fn email_delivery_available(&self) -> bool {
+        self.app_env != "self-host"
     }
 
     pub fn cookie_name(&self) -> &'static str {

@@ -5,8 +5,8 @@ use argon2::{
     password_hash::{SaltString, rand_core::OsRng},
 };
 use axum::{
-    Json,
-    extract::{FromRequestParts, State},
+    Form, Json,
+    extract::{FromRequestParts, Path as AxumPath, State, rejection::FormRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
@@ -14,7 +14,9 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{Duration, Utc};
 use libsql::{TransactionBehavior, params};
 use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use utoipa::ToSchema;
 use uuid::Uuid;
 
 use crate::{
@@ -28,13 +30,54 @@ use crate::{
 };
 
 const SESSION_DAYS: i64 = 30;
+const SESSION_MAX_AGE_SECONDS: i64 = SESSION_DAYS * 86_400;
+const API_KEY_DAYS: i64 = 3650;
+const HANDOFF_TICKET_SECONDS: i64 = 60;
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionCookieView {
+    name: String,
+    value: String,
+    max_age: i64,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionFromKeyResponse {
+    #[serde(flatten)]
+    user: UserView,
+    session_cookie: SessionCookieView,
+}
+
+#[derive(Debug, Serialize, ToSchema)]
+pub struct HandoffTicketResponse {
+    ticket: String,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct HandoffTicketForm {
+    ticket: String,
+}
 
 #[derive(Debug, Clone)]
 pub struct AuthUser {
     pub id: String,
     pub email: String,
     pub timezone: String,
-    pub session_hash: String,
+    pub session_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AuthMechanism {
+    Session,
+    ApiKey,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AuthContext {
+    pub user: AuthUser,
+    pub mechanism: AuthMechanism,
 }
 
 impl FromRequestParts<AppState> for AuthUser {
@@ -44,16 +87,22 @@ impl FromRequestParts<AppState> for AuthUser {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        if let Some(user) = parts.extensions.get::<Self>() {
-            return Ok(user.clone());
+        if let Some(context) = parts.extensions.get::<AuthContext>() {
+            return Ok(context.user.clone());
         }
-        let token = cookie_value(&parts.headers, state.config.cookie_name())
-            .ok_or_else(|| ApiError::unauthorized("请先登录"))?;
-        authenticate_token(state, &token).await
+        if let Some(token) = cookie_value(&parts.headers, state.config.cookie_name())
+            && let Ok(user) = authenticate_session_token(state, &token).await
+        {
+            return Ok(user);
+        }
+        if let Some(token) = bearer_token(&parts.headers) {
+            return authenticate_api_key(state, token).await;
+        }
+        Err(ApiError::unauthorized("请先登录"))
     }
 }
 
-pub(crate) async fn authenticate_token(
+pub(crate) async fn authenticate_session_token(
     state: &AppState,
     token: &str,
 ) -> Result<AuthUser, ApiError> {
@@ -74,7 +123,7 @@ pub(crate) async fn authenticate_token(
         id: row.get(0)?,
         email: row.get(1)?,
         timezone: row.get(2)?,
-        session_hash: token_hash.clone(),
+        session_hash: Some(token_hash.clone()),
     };
     let last_seen: String = row.get(3)?;
     if chrono::DateTime::parse_from_rfc3339(&last_seen)
@@ -94,11 +143,44 @@ pub(crate) async fn authenticate_token(
     Ok(user)
 }
 
+pub(crate) async fn authenticate_api_key(
+    state: &AppState,
+    token: &str,
+) -> Result<AuthUser, ApiError> {
+    let token_hash = hash_token(token);
+    let conn = state.connection().await?;
+    let now = Utc::now();
+    let mut rows = conn
+        .query(
+            "SELECT u.id, u.email, u.timezone FROM api_keys k JOIN users u ON u.id = k.user_id WHERE k.token_hash = ?1 AND k.expires_at > ?2 AND u.email_verified_at IS NOT NULL",
+            params![token_hash.clone(), now.to_rfc3339()],
+        )
+        .await?;
+    let row = rows
+        .next()
+        .await?
+        .ok_or_else(|| ApiError::unauthorized("API 密钥无效或已过期"))?;
+    let user = AuthUser {
+        id: row.get(0)?,
+        email: row.get(1)?,
+        timezone: row.get(2)?,
+        session_hash: None,
+    };
+    drop(rows);
+    conn.execute(
+        "UPDATE api_keys SET last_used_at = ?1 WHERE token_hash = ?2",
+        params![now.to_rfc3339(), token_hash],
+    )
+    .await?;
+    Ok(user)
+}
+
 #[utoipa::path(post, path = "/api/v1/auth/register", request_body = RegisterRequest, responses((status = 201, body = MessageResponse), (status = 422, body = crate::error::ErrorBody)))]
 pub async fn register(
     State(state): State<AppState>,
     Json(input): Json<RegisterRequest>,
 ) -> Result<(StatusCode, Json<MessageResponse>), ApiError> {
+    require_email_delivery(&state)?;
     let email = validate_email(&input.email)?;
     validate_password(&input.password)?;
     let timezone = validate_timezone(input.timezone.as_deref())?;
@@ -154,6 +236,7 @@ pub async fn verify_email(
     State(state): State<AppState>,
     Json(input): Json<TokenRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     consume_email_token(&state, &input.token, "verify_email", None).await?;
     Ok(Json(MessageResponse {
         message: "邮箱验证成功，现在可以登录".into(),
@@ -165,6 +248,7 @@ pub async fn resend_verification(
     State(state): State<AppState>,
     Json(input): Json<EmailRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     let email = validate_email(&input.email)?;
     state
         .rate_limiter
@@ -222,26 +306,22 @@ pub async fn login(
     let password_hash: String = row.get(1)?;
     let timezone: String = row.get(2)?;
     let verified_at: Option<String> = row.get(3)?;
+    drop(row);
+    drop(rows);
+    drop(conn);
     if !verify_password(input.password, password_hash).await? {
         return Err(ApiError::unauthorized("邮箱或密码不正确"));
     }
     if verified_at.is_none() {
         return Err(ApiError::forbidden("请先完成邮箱验证"));
     }
-
-    let (token, token_hash) = new_token();
-    let now = Utc::now();
-    conn.execute(
-        "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
-        params![Uuid::now_v7().to_string(), user_id.clone(), token_hash, now.to_rfc3339(), (now + Duration::days(SESSION_DAYS)).to_rfc3339()],
-    )
-    .await?;
-    let user = UserView {
+    let auth_user = AuthUser {
         id: user_id,
         email,
         timezone,
-        email_verified: true,
+        session_hash: None,
     };
+    let (user, token) = create_session(&state, auth_user).await?;
     let mut response = Json(user).into_response();
     response.headers_mut().insert(
         header::SET_COOKIE,
@@ -251,14 +331,255 @@ pub async fn login(
     Ok(response)
 }
 
-#[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 200, body = MessageResponse)), security(("cookieAuth" = [])))]
-pub async fn logout(State(state): State<AppState>, user: AuthUser) -> Result<Response, ApiError> {
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/session-from-key",
+    responses(
+        (status = 200, body = SessionFromKeyResponse),
+        (status = 401, body = crate::error::ErrorBody)
+    ),
+    security(("bearerAuth" = []))
+)]
+pub async fn session_from_key(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    // 这里故意不使用 AuthUser 提取器：它会先接受 session cookie，而这个交换端点
+    // 必须只认显式 Bearer 凭证。
+    let api_key =
+        bearer_token(&headers).ok_or_else(|| ApiError::unauthorized("请提供 API 密钥"))?;
+    let user = authenticate_api_key(&state, api_key).await?;
+    let (user, token) = create_session(&state, user).await?;
+    let cookie_name = state.config.cookie_name().to_owned();
+    let body = SessionFromKeyResponse {
+        user,
+        session_cookie: SessionCookieView {
+            name: cookie_name,
+            value: token.clone(),
+            max_age: SESSION_MAX_AGE_SECONDS,
+        },
+    };
+    let mut response = Json(body).into_response();
+    response.headers_mut().insert(
+        header::SET_COOKIE,
+        HeaderValue::from_str(&session_cookie_header(&state.config, &token, false))
+            .map_err(ApiError::internal)?,
+    );
+    Ok(response)
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/auth/handoff-tickets",
+    responses(
+        (status = 200, body = HandoffTicketResponse),
+        (status = 401, body = crate::error::ErrorBody)
+    ),
+    security(("bearerAuth" = []))
+)]
+pub async fn create_handoff_ticket(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    // 与 session-from-key 一样，这里不能使用会优先接受 session cookie 的 AuthUser
+    // 提取器。桌面交接票据只允许由显式 Bearer api-key 签发。
+    let api_key =
+        bearer_token(&headers).ok_or_else(|| ApiError::unauthorized("请提供 API 密钥"))?;
+    let user = authenticate_api_key(&state, api_key).await?;
+    let (ticket, token_hash) = new_token();
+    let now = Utc::now();
     let conn = state.connection().await?;
     conn.execute(
-        "DELETE FROM sessions WHERE token_hash = ?1 AND user_id = ?2",
-        params![user.session_hash, user.id],
+        "DELETE FROM handoff_tickets WHERE expires_at <= ?1",
+        [now.to_rfc3339()],
     )
     .await?;
+    conn.execute(
+        "INSERT INTO handoff_tickets(id, user_id, token_hash, expires_at, consumed_at, created_at) VALUES (?1, ?2, ?3, ?4, NULL, ?5)",
+        params![
+            Uuid::now_v7().to_string(),
+            user.id,
+            token_hash,
+            (now + Duration::seconds(HANDOFF_TICKET_SECONDS)).to_rfc3339(),
+            now.to_rfc3339()
+        ],
+    )
+    .await?;
+    let mut response = Json(HandoffTicketResponse { ticket }).into_response();
+    response
+        .headers_mut()
+        .insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    Ok(response)
+}
+
+pub async fn desktop_handoff(
+    State(state): State<AppState>,
+    form: Result<Form<HandoffTicketForm>, FormRejection>,
+) -> Result<Response, ApiError> {
+    let Ok(Form(input)) = form else {
+        return Ok(desktop_handoff_redirect(None));
+    };
+    consume_desktop_handoff(state, input.ticket).await
+}
+
+/// 走 URL 路径的交接入口。
+///
+/// 表单版依赖跳板页里的 JS 按时执行，而那条链上每一环都可能失效：注入时机、
+/// DOM 就绪、隐藏窗口的后台节流策略、CSP form-action。实测中票据签发了却始终
+/// 没有被消费，服务端一条请求都没收到。改用一次普通 GET 导航，由浏览器引擎直接
+/// 跟随 303，不需要任何脚本。
+///
+/// 票据因此出现在 URL 路径里，可接受：60 秒、单次消费、且服务端对该路径的
+/// 访问日志做脱敏。
+pub async fn desktop_handoff_by_path(
+    State(state): State<AppState>,
+    AxumPath(ticket): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    consume_desktop_handoff(state, ticket).await
+}
+
+async fn consume_desktop_handoff(state: AppState, ticket: String) -> Result<Response, ApiError> {
+    let input = HandoffTicketForm { ticket };
+    if input.ticket.is_empty() {
+        return Ok(desktop_handoff_redirect(None));
+    }
+
+    let token_hash = hash_token(&input.ticket);
+    let now = Utc::now();
+    let now_text = now.to_rfc3339();
+    let conn = state.connection().await?;
+    // Immediate 事务在读取前先取得写锁；同一张票据的并发请求只能有一个看到
+    // consumed_at IS NULL，消费标记与 session 创建也会一起提交或回滚。
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await?;
+    tx.execute(
+        "DELETE FROM handoff_tickets WHERE expires_at <= ?1",
+        [now_text.clone()],
+    )
+    .await?;
+    let mut rows = tx
+        .query(
+            "SELECT h.id, u.id, u.email, u.timezone FROM handoff_tickets h JOIN users u ON u.id = h.user_id WHERE h.token_hash = ?1 AND h.expires_at > ?2 AND h.consumed_at IS NULL AND u.email_verified_at IS NOT NULL",
+            params![token_hash, now_text.clone()],
+        )
+        .await?;
+    let Some(row) = rows.next().await? else {
+        drop(rows);
+        tx.commit().await?;
+        return Ok(desktop_handoff_redirect(None));
+    };
+    let ticket_id: String = row.get(0)?;
+    let user = AuthUser {
+        id: row.get(1)?,
+        email: row.get(2)?,
+        timezone: row.get(3)?,
+        session_hash: None,
+    };
+    drop(row);
+    drop(rows);
+    let changed = tx
+        .execute(
+            "UPDATE handoff_tickets SET consumed_at = ?1 WHERE id = ?2 AND consumed_at IS NULL AND expires_at > ?1",
+            params![now_text, ticket_id],
+        )
+        .await?;
+    if changed != 1 {
+        tx.commit().await?;
+        return Ok(desktop_handoff_redirect(None));
+    }
+    let session = new_session(user, now);
+    tx.execute(
+        "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        params![
+            session.id,
+            session.user.id,
+            session.token_hash,
+            session.created_at,
+            session.expires_at
+        ],
+    )
+    .await?;
+    tx.commit().await?;
+    Ok(desktop_handoff_redirect(Some(session_cookie_header(
+        &state.config,
+        &session.token,
+        false,
+    ))))
+}
+
+fn desktop_handoff_redirect(cookie: Option<String>) -> Response {
+    let mut response = StatusCode::SEE_OTHER.into_response();
+    let headers = response.headers_mut();
+    headers.insert(header::LOCATION, HeaderValue::from_static("/"));
+    headers.insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("no-referrer"),
+    );
+    if let Some(cookie) = cookie
+        && let Ok(value) = HeaderValue::from_str(&cookie)
+    {
+        headers.insert(header::SET_COOKIE, value);
+    }
+    response
+}
+
+struct NewSession {
+    id: String,
+    user: UserView,
+    token: String,
+    token_hash: String,
+    created_at: String,
+    expires_at: String,
+}
+
+fn new_session(user: AuthUser, now: chrono::DateTime<Utc>) -> NewSession {
+    let (token, token_hash) = new_token();
+    NewSession {
+        id: Uuid::now_v7().to_string(),
+        user: UserView {
+            id: user.id,
+            email: user.email,
+            timezone: user.timezone,
+            email_verified: true,
+        },
+        token,
+        token_hash,
+        created_at: now.to_rfc3339(),
+        expires_at: (now + Duration::days(SESSION_DAYS)).to_rfc3339(),
+    }
+}
+
+async fn create_session(state: &AppState, user: AuthUser) -> Result<(UserView, String), ApiError> {
+    let session = new_session(user, Utc::now());
+    state
+        .connection()
+        .await?
+        .execute(
+            "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+            params![
+                session.id,
+                session.user.id.clone(),
+                session.token_hash,
+                session.created_at,
+                session.expires_at
+            ],
+        )
+        .await?;
+    Ok((session.user, session.token))
+}
+
+#[utoipa::path(post, path = "/api/v1/auth/logout", responses((status = 200, body = MessageResponse)), security(("cookieAuth" = [])))]
+pub async fn logout(State(state): State<AppState>, user: AuthUser) -> Result<Response, ApiError> {
+    if let Some(session_hash) = user.session_hash {
+        let conn = state.connection().await?;
+        conn.execute(
+            "DELETE FROM sessions WHERE token_hash = ?1 AND user_id = ?2",
+            params![session_hash, user.id],
+        )
+        .await?;
+    }
     let mut response = Json(MessageResponse {
         message: "已退出登录".into(),
     })
@@ -286,6 +607,7 @@ pub async fn forgot_password(
     State(state): State<AppState>,
     Json(input): Json<EmailRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     let email = validate_email(&input.email)?;
     state
         .rate_limiter
@@ -323,6 +645,7 @@ pub async fn reset_password(
     State(state): State<AppState>,
     Json(input): Json<ResetPasswordRequest>,
 ) -> Result<Json<MessageResponse>, ApiError> {
+    require_email_delivery(&state)?;
     validate_password(&input.new_password)?;
     let password_hash = hash_password(input.new_password).await?;
     consume_email_token(&state, &input.token, "reset_password", Some(password_hash)).await?;
@@ -418,21 +741,33 @@ fn generic_email_message() -> MessageResponse {
     }
 }
 
-/// 桌面端单机模式的本地用户引导。
+fn require_email_delivery(state: &AppState) -> Result<(), ApiError> {
+    if state.config.email_delivery_available() {
+        Ok(())
+    } else {
+        Err(ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "email_unavailable",
+            "self-host 模式未配置邮件发送服务，此功能不可用",
+        ))
+    }
+}
+
+/// 为机器调用方签发长期 API 密钥。返回值是唯一一次可见的明文，数据库只保存哈希。
 ///
-/// 桌面版没有注册与邮箱验证的意义：首次启动静默建一个已验证的本地用户，之后每次
-/// 启动复用它并签发新会话。返回值是可直接下发的 `Set-Cookie` 头，调用方负责让
-/// webview 带上它——此后所有请求都与网页版走同一套 `AuthUser` 提取逻辑。
-pub async fn ensure_local_session(state: &AppState, email: &str) -> Result<String, ApiError> {
+/// 重复签发不会撤销任何仍有效的密钥；只清理已过期项，避免一次 CLI 重跑让正在使用
+/// 旧密钥的集成立刻掉线。
+pub async fn issue_api_key(state: &AppState, email: &str) -> Result<String, ApiError> {
+    let email = validate_email(email)?;
     let conn = state.connection().await?;
     let now = Utc::now();
     let mut rows = conn
-        .query("SELECT id FROM users WHERE email = ?1", [email])
+        .query("SELECT id FROM users WHERE email = ?1", [email.clone()])
         .await?;
     let user_id = match rows.next().await? {
         Some(row) => row.get::<String>(0)?,
         None => {
-            // 本地用户从不通过密码登录，随机口令只是为了满足 NOT NULL 且不可猜。
+            // 机器用户不通过密码登录，随机口令只是为了满足 NOT NULL 且不可猜。
             let mut secret = [0_u8; 32];
             rand::rngs::OsRng.fill_bytes(&mut secret);
             let password_hash = hash_password(URL_SAFE_NO_PAD.encode(secret)).await?;
@@ -451,24 +786,57 @@ pub async fn ensure_local_session(state: &AppState, email: &str) -> Result<Strin
             id
         }
     };
-    // 单机模式下只该存在一条会话。旧 token 的明文没有留存、无法复用，所以每次启动
-    // 都要重新签发；但必须同时清掉上一条，否则每启动一次就在表里堆一行永不回收的
-    // 凭据哈希。
-    conn.execute("DELETE FROM sessions WHERE user_id = ?1", [user_id.clone()])
-        .await?;
+    conn.execute(
+        "DELETE FROM api_keys WHERE user_id = ?1 AND expires_at <= ?2",
+        params![user_id.clone(), now.to_rfc3339()],
+    )
+    .await?;
     let (token, token_hash) = new_token();
     conn.execute(
-        "INSERT INTO sessions(id, user_id, token_hash, created_at, last_seen_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
+        "INSERT INTO api_keys(id, user_id, token_hash, created_at, last_used_at, expires_at) VALUES (?1, ?2, ?3, ?4, ?4, ?5)",
         params![
             Uuid::now_v7().to_string(),
             user_id,
             token_hash,
             now.to_rfc3339(),
-            (now + Duration::days(SESSION_DAYS)).to_rfc3339()
+            (now + Duration::days(API_KEY_DAYS)).to_rfc3339()
         ],
     )
     .await?;
-    Ok(session_cookie_header(&state.config, &token, false))
+    Ok(token)
+}
+
+/// 为已有用户设置新密码，并撤销该用户的所有网页登录会话。
+///
+/// API 密钥属于机器凭证，不随人的密码变更撤销。
+pub async fn set_password(state: &AppState, email: &str, password: String) -> Result<(), ApiError> {
+    let email = validate_email(email)?;
+    validate_password(&password)?;
+    let password_hash = hash_password(password).await?;
+    let conn = state.connection().await?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .await?;
+    let mut rows = tx
+        .query("SELECT id FROM users WHERE email = ?1", [email.clone()])
+        .await?;
+    let user_id = rows
+        .next()
+        .await?
+        .map(|row| row.get::<String>(0))
+        .transpose()?
+        .ok_or_else(|| ApiError::not_found(format!("用户不存在：{email}")))?;
+    drop(rows);
+    let now = Utc::now().to_rfc3339();
+    tx.execute(
+        "UPDATE users SET password_hash = ?1, updated_at = ?2 WHERE id = ?3",
+        params![password_hash, now, user_id.clone()],
+    )
+    .await?;
+    tx.execute("DELETE FROM sessions WHERE user_id = ?1", [user_id])
+        .await?;
+    tx.commit().await?;
+    Ok(())
 }
 
 async fn hash_password(password: String) -> Result<String, ApiError> {
@@ -506,7 +874,7 @@ fn hash_token(token: &str) -> String {
     format!("{:x}", Sha256::digest(token.as_bytes()))
 }
 
-fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
+pub(crate) fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
     headers
         .get(header::COOKIE)?
         .to_str()
@@ -514,6 +882,12 @@ fn cookie_value(headers: &HeaderMap, name: &str) -> Option<String> {
         .split(';')
         .filter_map(|part| part.trim().split_once('='))
         .find_map(|(key, value)| (key == name).then(|| value.to_owned()))
+}
+
+pub(crate) fn bearer_token(headers: &HeaderMap) -> Option<&str> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    let (scheme, token) = value.split_once(' ')?;
+    (scheme.eq_ignore_ascii_case("Bearer") && !token.trim().is_empty()).then(|| token.trim())
 }
 
 pub(crate) fn session_cookie_header(
@@ -531,7 +905,7 @@ pub(crate) fn session_cookie_header(
     if clear {
         cookie.push_str("; Max-Age=0");
     } else {
-        cookie.push_str(&format!("; Max-Age={}", SESSION_DAYS * 86_400));
+        cookie.push_str(&format!("; Max-Age={SESSION_MAX_AGE_SECONDS}"));
     }
     cookie
 }

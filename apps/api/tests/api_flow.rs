@@ -1,30 +1,45 @@
 use std::{fs, sync::Arc};
 
+use argon2::{
+    Argon2, PasswordHasher,
+    password_hash::{SaltString, rand_core::OsRng},
+};
 use axum::{
     Router,
     body::{Body, to_bytes},
     http::{HeaderMap, Method, Request, StatusCode, header},
 };
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use tower::ServiceExt;
+use uuid::Uuid;
 use zhiyu_api::{
-    AppState, app, config::Config, db, domain::MAX_SAFE_CENTS, email::DevFileEmailSender,
+    AppState, app, auth, config::Config, db, domain::MAX_SAFE_CENTS, email::DevFileEmailSender,
     rate_limit::RateLimiter,
 };
 
 struct TestApp {
     router: Router,
     root: TempDir,
+    state: AppState,
 }
 
 impl TestApp {
     async fn new() -> Self {
+        Self::with_env("test", "http://test.local").await
+    }
+
+    async fn self_host() -> Self {
+        Self::with_env("self-host", "https://test.local").await
+    }
+
+    async fn with_env(app_env: &str, public_base_url: &str) -> Self {
         let root = tempfile::tempdir().unwrap();
         let config = Config {
-            app_env: "test".into(),
+            app_env: app_env.into(),
             bind_addr: "127.0.0.1:0".parse().unwrap(),
-            public_base_url: "http://test.local".into(),
+            public_base_url: public_base_url.into(),
             database_url: format!("file:{}", root.path().join("test.db").display()),
             turso_auth_token: None,
             dev_mail_dir: root.path().join("mail"),
@@ -36,11 +51,32 @@ impl TestApp {
             email: Arc::new(DevFileEmailSender::new(config.dev_mail_dir.clone())),
             config: Arc::new(config),
             rate_limiter: RateLimiter::default(),
+            backup_status: Default::default(),
         };
         Self {
-            router: app(state),
+            router: app(state.clone()),
             root,
+            state,
         }
+    }
+
+    async fn insert_verified_user(&self, email: &str, password: &str) {
+        let salt = SaltString::generate(&mut OsRng);
+        let password_hash = Argon2::default()
+            .hash_password(password.as_bytes(), &salt)
+            .unwrap()
+            .to_string();
+        let now = chrono::Utc::now().to_rfc3339();
+        self.state
+            .connection()
+            .await
+            .unwrap()
+            .execute(
+                "INSERT INTO users(id, email, password_hash, timezone, email_verified_at, created_at, updated_at) VALUES (?1, ?2, ?3, 'Asia/Shanghai', ?4, ?4, ?4)",
+                libsql::params![Uuid::now_v7().to_string(), email, password_hash, now],
+            )
+            .await
+            .unwrap();
     }
 
     async fn register_and_login(&self, email: &str) -> String {
@@ -117,6 +153,862 @@ impl TestApp {
 }
 
 #[tokio::test]
+async fn issuing_an_api_key_keeps_existing_integrations_authenticated() {
+    let test = TestApp::new().await;
+    let first_key = auth::issue_api_key(&test.state, "machine@zhiyu.local")
+        .await
+        .unwrap();
+
+    auth::issue_api_key(&test.state, "machine@zhiyu.local")
+        .await
+        .unwrap();
+
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, user) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        &format!("Bearer {first_key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(user["email"], "machine@zhiyu.local");
+}
+
+#[tokio::test]
+async fn valid_api_key_authenticates_and_is_not_stored_in_plaintext() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "valid-key@zhiyu.local")
+        .await
+        .unwrap();
+    let conn = test.state.connection().await.unwrap();
+    let mut rows = conn
+        .query("SELECT token_hash FROM api_keys", ())
+        .await
+        .unwrap();
+    let stored_hash: String = rows.next().await.unwrap().unwrap().get(0).unwrap();
+    assert_ne!(stored_hash, key);
+    assert_eq!(stored_hash.len(), 64);
+    drop(rows);
+    drop(conn);
+
+    let (status, _, user) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(user["email"], "valid-key@zhiyu.local");
+}
+
+#[tokio::test]
+async fn api_key_can_issue_a_self_host_session_cookie() {
+    let test = TestApp::self_host().await;
+    let key = auth::issue_api_key(&test.state, "desktop@zhiyu.local")
+        .await
+        .unwrap();
+
+    let (status, headers, body) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["email"], "desktop@zhiyu.local");
+    assert_eq!(body["sessionCookie"]["name"], "__Host-zhiyu_session");
+    assert_eq!(body["sessionCookie"]["maxAge"], 30 * 86_400);
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(cookie.starts_with("__Host-zhiyu_session="));
+    assert!(cookie.contains("; Path=/"));
+    assert!(cookie.contains("; HttpOnly"));
+    assert!(cookie.contains("; SameSite=Lax"));
+    assert!(cookie.contains("; Secure"));
+    assert!(!cookie.contains("Domain="));
+}
+
+#[tokio::test]
+async fn session_from_key_rejects_invalid_and_empty_api_keys() {
+    let test = TestApp::new().await;
+
+    for authorization in ["Bearer definitely-invalid", "Bearer "] {
+        let (status, _, body) = send_with_authorization(
+            &test.router,
+            Method::POST,
+            "/api/v1/auth/session-from-key",
+            None,
+            authorization,
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["code"], "unauthorized");
+    }
+}
+
+#[tokio::test]
+async fn session_from_key_does_not_accept_a_session_cookie() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("cookie-only@zhiyu.local").await;
+
+    let (status, _, body) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn session_from_key_bearer_request_does_not_require_origin() {
+    let test = TestApp::self_host().await;
+    let key = auth::issue_api_key(&test.state, "no-origin@zhiyu.local")
+        .await
+        .unwrap();
+
+    let (status, _, _) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn session_from_key_issued_cookie_authenticates_later_requests() {
+    let test = TestApp::self_host().await;
+    let key = auth::issue_api_key(&test.state, "session-user@zhiyu.local")
+        .await
+        .unwrap();
+    let (status, _, body) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/session-from-key",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = format!(
+        "{}={}",
+        body["sessionCookie"]["name"].as_str().unwrap(),
+        body["sessionCookie"]["value"].as_str().unwrap()
+    );
+
+    let (status, _, user) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(user["email"], "session-user@zhiyu.local");
+}
+
+async fn issue_handoff_ticket(test: &TestApp, email: &str) -> String {
+    let key = auth::issue_api_key(&test.state, email).await.unwrap();
+    let (status, headers, body) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/handoff-tickets",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    body["ticket"].as_str().unwrap().to_owned()
+}
+
+#[tokio::test]
+async fn handoff_ticket_is_short_lived_hashed_and_bearer_only() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("ticket-cookie@zhiyu.local").await;
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/handoff-tickets",
+        None,
+        Some(&cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+    let ticket = issue_handoff_ticket(&test, "ticket@zhiyu.local").await;
+    let conn = test.state.connection().await.unwrap();
+    let mut rows = conn
+        .query(
+            "SELECT token_hash, created_at, expires_at FROM handoff_tickets",
+            (),
+        )
+        .await
+        .unwrap();
+    let row = rows.next().await.unwrap().unwrap();
+    let token_hash: String = row.get(0).unwrap();
+    let created_at: String = row.get(1).unwrap();
+    let expires_at: String = row.get(2).unwrap();
+    assert_ne!(token_hash, ticket);
+    assert_eq!(token_hash.len(), 64);
+    let lifetime = chrono::DateTime::parse_from_rfc3339(&expires_at).unwrap()
+        - chrono::DateTime::parse_from_rfc3339(&created_at).unwrap();
+    assert_eq!(lifetime.num_seconds(), 60);
+}
+
+#[tokio::test]
+async fn valid_desktop_handoff_sets_cookie_and_redirects_despite_local_origin() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-valid@zhiyu.local").await;
+
+    let (status, headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers.get(header::LOCATION).unwrap(), "/");
+    assert_eq!(headers.get(header::CACHE_CONTROL).unwrap(), "no-store");
+    assert_eq!(headers.get(header::REFERRER_POLICY).unwrap(), "no-referrer");
+    let set_cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(set_cookie.starts_with("__Host-zhiyu_session="));
+    assert!(set_cookie.contains("; Path=/"));
+    assert!(set_cookie.contains("; HttpOnly"));
+    assert!(set_cookie.contains("; SameSite=Lax"));
+    assert!(set_cookie.contains("; Secure"));
+    assert!(!set_cookie.contains("Domain="));
+
+    let cookie = set_cookie.split(';').next().unwrap();
+    let (status, _, user) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        Some(cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(user["email"], "handoff-valid@zhiyu.local");
+}
+
+#[tokio::test]
+async fn expired_desktop_handoff_redirects_without_cookie() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-expired@zhiyu.local").await;
+    test.state
+        .connection()
+        .await
+        .unwrap()
+        .execute(
+            "UPDATE handoff_tickets SET expires_at = ?1",
+            [(chrono::Utc::now() - chrono::Duration::seconds(1)).to_rfc3339()],
+        )
+        .await
+        .unwrap();
+
+    let (status, headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(!headers.contains_key(header::SET_COOKIE));
+}
+
+#[tokio::test]
+async fn consumed_desktop_handoff_redirects_without_a_second_cookie() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-consumed@zhiyu.local").await;
+    let (_, first_headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert!(first_headers.contains_key(header::SET_COOKIE));
+
+    let (status, second_headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        &format!("ticket={ticket}"),
+        None,
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert!(!second_headers.contains_key(header::SET_COOKIE));
+}
+
+#[tokio::test]
+async fn concurrent_desktop_handoff_consumption_succeeds_exactly_once() {
+    let test = TestApp::self_host().await;
+    let ticket = issue_handoff_ticket(&test, "handoff-race@zhiyu.local").await;
+    let body = format!("ticket={ticket}");
+    let (first, second) = tokio::join!(
+        send_form(
+            &test.router,
+            "/desktop/handoff",
+            &body,
+            None,
+            Some("tauri://localhost")
+        ),
+        send_form(
+            &test.router,
+            "/desktop/handoff",
+            &body,
+            None,
+            Some("tauri://localhost")
+        )
+    );
+    assert_eq!(first.0, StatusCode::SEE_OTHER);
+    assert_eq!(second.0, StatusCode::SEE_OTHER);
+    let cookie_count = [first.1, second.1]
+        .into_iter()
+        .filter(|headers| headers.contains_key(header::SET_COOKIE))
+        .count();
+    assert_eq!(cookie_count, 1);
+}
+
+#[tokio::test]
+async fn invalid_desktop_handoff_ignores_existing_session_cookie() {
+    let test = TestApp::new().await;
+    let cookie = test
+        .register_and_login("handoff-old-cookie@zhiyu.local")
+        .await;
+    let (status, headers, _) = send_form(
+        &test.router,
+        "/desktop/handoff",
+        "ticket=not-a-valid-ticket",
+        Some(&cookie),
+        Some("tauri://localhost"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers.get(header::LOCATION).unwrap(), "/");
+    assert!(!headers.contains_key(header::SET_COOKIE));
+}
+
+#[tokio::test]
+async fn invalid_api_key_is_rejected() {
+    let test = TestApp::new().await;
+    let (status, _, body) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        "Bearer definitely-invalid",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn empty_api_key_is_rejected() {
+    let test = TestApp::new().await;
+    let (status, _, body) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        "Bearer ",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn expired_api_key_is_rejected() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "expired-key@zhiyu.local")
+        .await
+        .unwrap();
+    test.state
+        .connection()
+        .await
+        .unwrap()
+        .execute(
+            "UPDATE api_keys SET expires_at = '2000-01-01T00:00:00Z'",
+            (),
+        )
+        .await
+        .unwrap();
+    let (status, _, body) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn api_key_write_does_not_require_csrf_origin() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "csrf-key@zhiyu.local")
+        .await
+        .unwrap();
+    let (status, _, _) = send_with_authorization(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "API 现金", "accountType": "cash" })),
+        &format!("Bearer {key}"),
+        Some("api-key-no-csrf-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn expired_session_cookie_falls_back_to_bearer_without_csrf_check() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "expired-cookie@zhiyu.local")
+        .await
+        .unwrap();
+    let (status, _, _) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "Bearer 现金", "accountType": "cash" })),
+        Some("zhiyu_session=definitely-expired"),
+        Some(&format!("Bearer {key}")),
+        Some("https://wrong-origin.example"),
+        Some("expired-cookie-bearer-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn valid_session_cookie_with_wrong_origin_is_forbidden() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("wrong-origin@zhiyu.local").await;
+    let (status, _, body) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "错误来源", "accountType": "cash" })),
+        Some(&cookie),
+        None,
+        Some("https://wrong-origin.example"),
+        Some("wrong-origin-session-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::FORBIDDEN);
+    assert_eq!(body["code"], "forbidden");
+}
+
+#[tokio::test]
+async fn valid_session_cookie_with_matching_origin_succeeds() {
+    let test = TestApp::new().await;
+    let cookie = test.register_and_login("matching-origin@zhiyu.local").await;
+    let (status, _, _) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "正确来源", "accountType": "cash" })),
+        Some(&cookie),
+        None,
+        Some("http://test.local"),
+        Some("matching-origin-session-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn write_without_cookie_or_bearer_is_unauthorized() {
+    let test = TestApp::new().await;
+    let (status, _, body) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "未认证", "accountType": "cash" })),
+        None,
+        None,
+        None,
+        Some("no-credentials-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    assert_eq!(body["code"], "unauthorized");
+}
+
+#[tokio::test]
+async fn similarly_named_cookie_with_bearer_does_not_trigger_csrf_check() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "similar-cookie@zhiyu.local")
+        .await
+        .unwrap();
+    let (status, _, _) = send_with_credentials(
+        &test.router,
+        Method::POST,
+        "/api/v1/ledger-accounts",
+        Some(json!({ "name": "无关 Cookie", "accountType": "cash" })),
+        Some("zhiyu_session_x=1"),
+        Some(&format!("Bearer {key}")),
+        Some("https://wrong-origin.example"),
+        Some("similar-cookie-bearer-0001"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn setting_password_revokes_old_sessions_and_allows_new_login() {
+    let test = TestApp::new().await;
+    test.insert_verified_user("passwd@zhiyu.local", "a-very-secure-password")
+        .await;
+    let (status, headers, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some(json!({ "email": "passwd@zhiyu.local", "password": "a-very-secure-password" })),
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let old_cookie = headers
+        .get(header::SET_COOKIE)
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_owned();
+
+    auth::set_password(
+        &test.state,
+        "passwd@zhiyu.local",
+        "the-new-secure-password".into(),
+    )
+    .await
+    .unwrap();
+
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        Some(&old_cookie),
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some(json!({ "email": "passwd@zhiyu.local", "password": "the-new-secure-password" })),
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn setting_password_rejects_unknown_user_without_creating_it() {
+    let test = TestApp::new().await;
+    let error = auth::set_password(
+        &test.state,
+        "missing@zhiyu.local",
+        "a-strong-new-password".into(),
+    )
+    .await
+    .unwrap_err();
+    assert_eq!(error.status, StatusCode::NOT_FOUND);
+    assert_eq!(error.message, "用户不存在：missing@zhiyu.local");
+
+    let mut rows = test
+        .state
+        .connection()
+        .await
+        .unwrap()
+        .query("SELECT COUNT(*) FROM users", ())
+        .await
+        .unwrap();
+    assert_eq!(
+        rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+        0
+    );
+}
+
+#[tokio::test]
+async fn setting_password_rejects_weak_password_and_keeps_api_keys() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "credentials@zhiyu.local")
+        .await
+        .unwrap();
+    let error = auth::set_password(&test.state, "credentials@zhiyu.local", "short".into())
+        .await
+        .unwrap_err();
+    assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+
+    auth::set_password(
+        &test.state,
+        "credentials@zhiyu.local",
+        "a-strong-human-password".into(),
+    )
+    .await
+    .unwrap();
+    let (status, _, _) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/auth/me",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+}
+
+#[tokio::test]
+async fn backup_endpoints_require_authentication() {
+    let test = TestApp::new().await;
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/backups",
+        None,
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+    let (status, _, _) = send(
+        &test.router,
+        Method::GET,
+        "/api/v1/backups/2026-08-10T02:03:04Z",
+        None,
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn api_key_lists_and_downloads_verified_backup() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "backup-reader@zhiyu.local")
+        .await
+        .unwrap();
+    let backup_dir = zhiyu_api::backup::backup_directory(&test.state.config).unwrap();
+    let snapshot = zhiyu_api::backup::create_managed_snapshot(
+        &test.state.db,
+        &backup_dir,
+        "2026-08-10T02:03:04Z".parse().unwrap(),
+    )
+    .await
+    .unwrap();
+
+    let (status, _, list) = send_with_authorization(
+        &test.router,
+        Method::GET,
+        "/api/v1/backups",
+        None,
+        &format!("Bearer {key}"),
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(list[0]["id"], "2026-08-10T02:03:04Z");
+    assert_eq!(list[0]["size"], snapshot.manifest.database_size_bytes);
+    assert_eq!(list[0]["sha256"], snapshot.manifest.database_sha256);
+    // 字段名必须是 camelCase：桌面端的 RemoteSnapshot 带 rename_all = "camelCase"，
+    // 服务端漏掉这个属性时两边解析不上，而各自的单测都会照样通过——所以这里既断言
+    // camelCase 存在，也断言 snake_case 不存在，把跨端契约钉死在服务端这一侧。
+    assert_eq!(list[0]["createdAt"], "2026-08-10T02:03:04Z");
+    assert_eq!(list[0]["schemaVersion"], 11);
+    assert!(list[0].get("created_at").is_none());
+    assert!(list[0].get("schema_version").is_none());
+
+    let response = test
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/backups/2026-08-10T02:03:04Z")
+                .header(header::AUTHORIZATION, format!("Bearer {key}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response.headers()[header::CONTENT_TYPE],
+        "application/octet-stream"
+    );
+    assert_eq!(response.headers()[header::CACHE_CONTROL], "no-store");
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    assert_eq!(bytes.len() as u64, snapshot.manifest.database_size_bytes);
+    assert_eq!(
+        format!("{:x}", Sha256::digest(&bytes)),
+        snapshot.manifest.database_sha256
+    );
+}
+
+#[tokio::test]
+async fn backup_download_rejects_forged_ids() {
+    let test = TestApp::new().await;
+    let key = auth::issue_api_key(&test.state, "backup-id@zhiyu.local")
+        .await
+        .unwrap();
+    let overlong = "a".repeat(500);
+    for uri in [
+        "/api/v1/backups/%2E%2E%2Fsecret".to_owned(),
+        "/api/v1/backups/%2Fetc%2Fpasswd".to_owned(),
+        format!("/api/v1/backups/{overlong}"),
+    ] {
+        let (status, _, _) = send_with_authorization(
+            &test.router,
+            Method::GET,
+            &uri,
+            None,
+            &format!("Bearer {key}"),
+            None,
+        )
+        .await;
+        assert!(
+            matches!(status, StatusCode::BAD_REQUEST | StatusCode::NOT_FOUND),
+            "伪造 ID 未被拒绝：{uri} -> {status}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn self_host_login_sets_secure_host_cookie_without_domain() {
+    let test = TestApp::self_host().await;
+    test.insert_verified_user("self-host@zhiyu.local", "a-very-secure-password")
+        .await;
+    let (status, headers, _) = send(
+        &test.router,
+        Method::POST,
+        "/api/v1/auth/login",
+        Some(json!({ "email": "self-host@zhiyu.local", "password": "a-very-secure-password" })),
+        None,
+        None,
+        false,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = headers.get(header::SET_COOKIE).unwrap().to_str().unwrap();
+    assert!(cookie.starts_with("__Host-zhiyu_session="));
+    assert!(cookie.contains("; Path=/"));
+    assert!(cookie.contains("; Secure"));
+    assert!(!cookie.to_ascii_lowercase().contains("domain="));
+}
+
+#[tokio::test]
+async fn self_host_email_routes_return_explicit_unavailable_error() {
+    let test = TestApp::self_host().await;
+    for (path, body) in [
+        (
+            "/api/v1/auth/register",
+            json!({ "email": "new@zhiyu.local", "password": "a-very-secure-password", "timezone": "Asia/Shanghai" }),
+        ),
+        ("/api/v1/auth/verify-email", json!({ "token": "token" })),
+        (
+            "/api/v1/auth/resend-verification",
+            json!({ "email": "new@zhiyu.local" }),
+        ),
+        (
+            "/api/v1/auth/forgot-password",
+            json!({ "email": "new@zhiyu.local" }),
+        ),
+        (
+            "/api/v1/auth/reset-password",
+            json!({ "token": "token", "newPassword": "a-very-secure-password" }),
+        ),
+    ] {
+        let (status, _, response) = send(
+            &test.router,
+            Method::POST,
+            path,
+            Some(body),
+            None,
+            None,
+            false,
+        )
+        .await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE, "{path}");
+        assert_eq!(response["code"], "email_unavailable", "{path}");
+        assert!(
+            response["message"].as_str().unwrap().contains("不可用"),
+            "{path}"
+        );
+    }
+}
+
+#[tokio::test]
 async fn complete_ledger_flow_is_idempotent_auditable_and_user_scoped() {
     let test = TestApp::new().await;
     let cookie = test.register_and_login("first@example.com").await;
@@ -124,12 +1016,15 @@ async fn complete_ledger_flow_is_idempotent_auditable_and_user_scoped() {
         .create_ledger_account(&cookie, "微信支付-完整流程", "wechat_balance")
         .await;
     let account_id = account["id"].as_str().unwrap();
+    // dueOn 必须相对今天计算：DUE_SOON_DAYS 是 7，写死日期会让这个断言在到期日
+    // 之后变成 overdue，测试到那天才炸。取今天 +3 天，稳定落在 due_soon 窗口内。
+    let due_on = (chrono::Utc::now().date_naive() + chrono::Duration::days(3)).to_string();
     let create_body = json!({
         "direction": "lend_out",
         "counterpartyName": "阿青",
         "principalCents": 100_000,
         "occurredOn": "2026-08-02",
-        "dueOn": "2026-08-09",
+        "dueOn": due_on,
         "note": "测试借款",
         "accountId": account_id
     });
@@ -2157,4 +3052,169 @@ async fn send(
             .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
     };
     (status, headers, body)
+}
+
+async fn send_with_authorization(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    authorization: &str,
+    idempotency_key: Option<&str>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut builder = Request::builder()
+        .method(method)
+        .uri(uri)
+        .header(header::AUTHORIZATION, authorization);
+    if body.is_some() {
+        builder = builder.header(header::CONTENT_TYPE, "application/json");
+    }
+    if let Some(key) = idempotency_key {
+        builder = builder.header("idempotency-key", key);
+    }
+    let request = builder
+        .body(Body::from(
+            body.map(|value| value.to_string()).unwrap_or_default(),
+        ))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    (status, headers, body)
+}
+
+async fn send_form(
+    router: &Router,
+    uri: &str,
+    body: &str,
+    cookie: Option<&str>,
+    origin: Option<&str>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut builder = Request::builder()
+        .method(Method::POST)
+        .uri(uri)
+        .header(header::CONTENT_TYPE, "application/x-www-form-urlencoded");
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    if let Some(origin) = origin {
+        builder = builder.header(header::ORIGIN, origin);
+    }
+    let response = router
+        .clone()
+        .oneshot(builder.body(Body::from(body.to_owned())).unwrap())
+        .await
+        .unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    (status, headers, body)
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn send_with_credentials(
+    router: &Router,
+    method: Method,
+    uri: &str,
+    body: Option<Value>,
+    cookie: Option<&str>,
+    authorization: Option<&str>,
+    origin: Option<&str>,
+    idempotency_key: Option<&str>,
+) -> (StatusCode, HeaderMap, Value) {
+    let mut builder = Request::builder().method(method).uri(uri);
+    if body.is_some() {
+        builder = builder.header(header::CONTENT_TYPE, "application/json");
+    }
+    if let Some(cookie) = cookie {
+        builder = builder.header(header::COOKIE, cookie);
+    }
+    if let Some(authorization) = authorization {
+        builder = builder.header(header::AUTHORIZATION, authorization);
+    }
+    if let Some(origin) = origin {
+        builder = builder.header(header::ORIGIN, origin);
+    }
+    if let Some(key) = idempotency_key {
+        builder = builder.header("idempotency-key", key);
+    }
+    let request = builder
+        .body(Body::from(
+            body.map(|value| value.to_string()).unwrap_or_default(),
+        ))
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    let status = response.status();
+    let headers = response.headers().clone();
+    let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+    let body = if bytes.is_empty() {
+        Value::Null
+    } else {
+        serde_json::from_slice(&bytes)
+            .unwrap_or_else(|_| Value::String(String::from_utf8_lossy(&bytes).into_owned()))
+    };
+    (status, headers, body)
+}
+
+/// 静态资源的缓存策略必须显式声明。tower-http 默认什么都不设，客户端会退回启发式
+/// 缓存（按 last-modified 自行推算过期时间），实测导致 WKWebView 长期持有旧
+/// index.html，服务端换了新 bundle 也不被发现，每次部署都要手动清缓存。
+/// 两类资源策略相反，这里把它们钉死。
+#[tokio::test]
+async fn static_assets_declare_cache_policy() {
+    let test = TestApp::new().await;
+    let dist = test.state.config.web_dist_dir.clone();
+    std::fs::create_dir_all(dist.join("assets")).unwrap();
+    std::fs::write(dist.join("index.html"), "<!doctype html>").unwrap();
+    std::fs::write(dist.join("assets/index-abc123.js"), "console.log(1)").unwrap();
+
+    // 文件名带内容 hash，内容变则文件名变，可以永久缓存。
+    let response = test
+        .router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/assets/index-abc123.js")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("public, max-age=31536000, immutable"),
+    );
+
+    // index.html 是新 bundle 的唯一入口，必须每次回源验证。
+    let response = test
+        .router
+        .clone()
+        .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        response
+            .headers()
+            .get(header::CACHE_CONTROL)
+            .and_then(|value| value.to_str().ok()),
+        Some("no-cache"),
+    );
 }

@@ -7,7 +7,7 @@ services:
     container_name: zhiyu
     restart: unless-stopped
     environment:
-      APP_ENV: development
+      APP_ENV: self-host
       BIND_ADDR: 0.0.0.0:8790
       PUBLIC_BASE_URL: https://zhiyu.askfish.net
       DATABASE_URL: file:/data/preview.db

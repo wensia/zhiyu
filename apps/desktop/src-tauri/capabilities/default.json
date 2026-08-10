@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "知余桌面主窗口的最小能力集",
+  "description": "远程主窗口不允许调用任何 Tauri IPC",
   "windows": ["main"],
-  "permissions": ["core:default"]
+  "permissions": []
 }

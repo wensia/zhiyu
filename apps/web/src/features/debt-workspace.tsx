@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { createColumnHelper, flexRender, getCoreRowModel, useReactTable } from "@tanstack/react-table"
 import {
   ArchiveIcon,
@@ -17,6 +17,7 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react"
 import { useNavigate, useParams } from "react-router-dom"
 
 import { ApiClientError, api } from "../api/client"
+import { useIdempotentMutation } from "../api/use-idempotent-mutation"
 import type { Counterparty, Debt, DebtStatus, LedgerAccount, LedgerAccountRef, Summary } from "../api/types"
 import {
   Button,
@@ -300,15 +301,15 @@ export function DebtFormModal({ accounts, accountsLoading = false, open, onOpenC
   const [draft, setDraft] = useState<DebtDraft>(initial)
   const [error, setError] = useState("")
   useEffect(() => { if (open) { setDraft(initial); setError("") } }, [open, initial])
-  const mutation = useMutation({ mutationFn: async () => {
+  const mutation = useIdempotentMutation({ mutationFn: async (_variables: void, write) => {
     const cents = toCents(draft.principal)
     if (!cents) throw new Error("请输入正确的本金金额")
     if (!draft.counterpartyId && !draft.counterpartyName.trim()) throw new Error("请选择或填写联系人")
     if (draft.originKind === "cash_movement" && !draft.accountId) throw new Error(`请选择${principalAccountLabel(draft.direction)}`)
     const accountId = draft.originKind === "cash_movement" ? draft.accountId : null
     const originKind = draft.originKind
-    if (debt) return api.updateDebt(debt.id, { version: debt.version, accountId, originKind, counterpartyId: draft.counterpartyId, principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note })
-    return api.createDebt({ direction: draft.direction, accountId, originKind, counterpartyId: draft.counterpartyId || null, counterpartyName: draft.counterpartyId ? null : draft.counterpartyName.trim(), principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note })
+    if (debt) return api.updateDebt(debt.id, { version: debt.version, accountId, originKind, counterpartyId: draft.counterpartyId, principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note }, write)
+    return api.createDebt({ direction: draft.direction, accountId, originKind, counterpartyId: draft.counterpartyId || null, counterpartyName: draft.counterpartyId ? null : draft.counterpartyName.trim(), principalCents: cents, occurredOn: draft.occurredOn, dueOn: draft.dueOn || null, note: draft.note }, write)
   }, onSuccess: async () => {
     await onSaved()
     onOpenChange(false)
@@ -370,10 +371,10 @@ export function DebtDetailPage() {
   const [editingRepayment, setEditingRepayment] = useState<Debt["repayments"][number] | null>(null)
   const [confirm, setConfirm] = useState<"delete" | "archive" | null>(null)
   const refresh = async () => Promise.all([queryClient.invalidateQueries({ queryKey: ["debts"] }), queryClient.invalidateQueries({ queryKey: ["summary"] }), queryClient.invalidateQueries({ queryKey: ["counterparties"] }), queryClient.invalidateQueries({ queryKey: ["ledger-accounts"] })])
-  const mutation = useMutation({ mutationFn: async () => {
+  const mutation = useIdempotentMutation({ mutationFn: async (_variables: void, write) => {
     if (!debt || !confirm) return
-    if (confirm === "delete") return api.deleteDebt(debt.id, debt.version)
-    return debt.archived ? api.restoreDebt(debt.id, debt.version) : api.archiveDebt(debt.id, debt.version)
+    if (confirm === "delete") return api.deleteDebt(debt.id, debt.version, write)
+    return debt.archived ? api.restoreDebt(debt.id, debt.version, write) : api.archiveDebt(debt.id, debt.version, write)
   }, onSuccess: async () => {
     const completedAction = confirm
     await refresh()
@@ -460,13 +461,13 @@ function DebtMovementModal({ accounts, accountsLoading, debt, open, onOpenChange
   const actionLabel = isAddition ? additionLabel : "登记还款"
   const accountLabel = isAddition ? principalAccountLabel(debt.direction) : repaymentAccountLabel(debt.direction)
   const activeAccounts = accounts.filter((account) => !account.archived)
-  const mutation = useMutation({ mutationFn: () => {
+  const mutation = useIdempotentMutation({ mutationFn: (_variables: void, write) => {
     const cents = toCents(amount)
     if (!cents) throw new Error(`请输入正确的${isAddition ? additionLabel : "还款"}金额`)
     if (!accountId) throw new Error(`请选择${accountLabel}`)
     return isAddition
-      ? api.createDebtAddition(debt.id, { accountId, amountCents: cents, effectiveOn: date, note })
-      : api.createRepayment(debt.id, { accountId, amountCents: cents, effectiveOn: date, note })
+      ? api.createDebtAddition(debt.id, { accountId, amountCents: cents, effectiveOn: date, note }, write)
+      : api.createRepayment(debt.id, { accountId, amountCents: cents, effectiveOn: date, note }, write)
   }, onSuccess: async () => { await onSaved(); onOpenChange(false); toast({ title: `${actionLabel}已登记`, type: "success" }) }, onError: (cause) => { setError(cause instanceof Error ? cause.message : "登记失败"); if (cause instanceof ApiClientError && cause.status === 409) void onSaved() } })
   useEffect(() => { if (open) { setAction("addition"); setAmount(""); setDate(today()); setNote(""); setAccountId(""); setError("") } }, [open])
   return <Modal open={open} onOpenChange={onOpenChange} title="登记往来" description="选择本次往来动作后，填写金额、账户和日期。" footer={<><Button disabled={mutation.isPending} onClick={() => onOpenChange(false)}>取消</Button><Button disabled={mutation.isPending || accountsLoading || activeAccounts.length === 0} onClick={() => mutation.mutate()} variant="default">{mutation.isPending ? "正在登记…" : "确认登记"}</Button></>}><div className="form-stack"><Field className="field-medium" label="动作"><Select ariaLabel="动作" onValueChange={(value) => { setAction(value as "addition" | "repayment"); setError("") }} options={[{ value: "addition", label: additionLabel }, { value: "repayment", label: "登记还款" }]} value={action} /></Field><MoneyAccountField accounts={accounts} label={accountLabel} loading={accountsLoading} onManage={() => { onOpenChange(false); navigate("/app/accounts") }} onValueChange={setAccountId} value={accountId} /><Field className="field-number" label={`${isAddition ? additionLabel : "还款"}金额（元）`}><Input autoFocus inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /></Field><Field label={isAddition ? "追加日期" : "还款日期"}><DatePicker ariaLabel={isAddition ? "追加日期" : "还款日期"} onValueChange={setDate} value={date} /></Field><Field label="备注"><Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选" /></Field>{error ? <InlineNotice type="error">{error}</InlineNotice> : null}</div></Modal>
@@ -486,12 +487,12 @@ function DebtAdditionModal({ accounts, accountsLoading, debt, event, open, onOpe
   const convertsToRepayment = editing && movementType === "repayment"
   const displayedActionLabel = convertsToRepayment ? "登记还款" : actionLabel
   const activeAccounts = accounts.filter((account) => !account.archived)
-  const mutation = useMutation({ mutationFn: () => {
+  const mutation = useIdempotentMutation({ mutationFn: (_variables: void, write) => {
     const cents = toCents(amount)
     if (!cents) throw new Error(`请输入正确的${actionLabel}金额`)
-    if (event) return api.updateDebtAddition(event.id, { version: debt.version, amountCents: cents, effectiveOn: date, note, accountId: accountId || undefined, movementType: convertsToRepayment ? "repayment" : undefined })
+    if (event) return api.updateDebtAddition(event.id, { version: debt.version, amountCents: cents, effectiveOn: date, note, accountId: accountId || undefined, movementType: convertsToRepayment ? "repayment" : undefined }, write)
     if (!accountId) throw new Error(`请选择${principalAccountLabel(debt.direction)}`)
-    return api.createDebtAddition(debt.id, { accountId, amountCents: cents, effectiveOn: date, note })
+    return api.createDebtAddition(debt.id, { accountId, amountCents: cents, effectiveOn: date, note }, write)
   }, onSuccess: async () => { await onSaved(); onOpenChange(false); toast({ title: editing ? `${actionLabel}记录已更新` : `${actionLabel}已登记`, type: "success" }) }, onError: (cause) => { setError(cause instanceof Error ? cause.message : editing ? "更新失败" : "追加失败"); if (cause instanceof ApiClientError && cause.status === 409) void onSaved() } })
   useEffect(() => { if (open) { setAmount(event ? String(event.amountCents / 100) : ""); setDate(event?.effectiveOn || today()); setNote(event?.note || ""); setAccountId(event?.account?.id || ""); setMovementType("addition"); setError("") } }, [open, event])
   return <Modal open={open} onOpenChange={onOpenChange} title={editing ? `编辑${displayedActionLabel}` : actionLabel} description={editing ? "可修改金额、账户、日期、备注和往来类型。" : "追加后，本金与剩余金额都会增加。"} footer={<><Button disabled={mutation.isPending} onClick={() => onOpenChange(false)}>取消</Button><Button disabled={mutation.isPending || accountsLoading || (!editing && activeAccounts.length === 0)} onClick={() => mutation.mutate()} variant="default">{mutation.isPending ? editing ? "正在保存…" : "正在追加…" : editing ? "保存修改" : "确认追加"}</Button></>}><div className="form-stack">{editing ? <Field className="field-medium" label="动作"><Select ariaLabel="动作" onValueChange={(value) => setMovementType(value as "addition" | "repayment")} options={[{ value: "addition", label: actionLabel }, { value: "repayment", label: "登记还款" }]} value={movementType} /></Field> : null}<MoneyAccountField accounts={accounts} allowEmpty={editing} label={convertsToRepayment ? repaymentAccountLabel(debt.direction) : principalAccountLabel(debt.direction)} loading={accountsLoading} onManage={() => { onOpenChange(false); navigate("/app/accounts") }} onValueChange={setAccountId} value={accountId} /><Field className="field-number" label={`${convertsToRepayment ? "还款" : actionLabel}金额（元）`}><Input autoFocus inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /></Field><Field label={convertsToRepayment ? "还款日期" : "追加日期"}><DatePicker ariaLabel={convertsToRepayment ? "还款日期" : "追加日期"} onValueChange={setDate} value={date} /></Field><Field label="备注"><Textarea value={note} onChange={(event) => setNote(event.target.value)} placeholder="可选" /></Field>{error ? <InlineNotice type="error">{error}</InlineNotice> : null}</div></Modal>
@@ -510,12 +511,12 @@ function RepaymentModal({ accounts, accountsLoading, debt, event, open, onOpenCh
   const additionLabel = debt.direction === "lend_out" ? "追加借出" : "追加借入"
   const convertsToAddition = editing && movementType === "addition"
   const activeAccounts = accounts.filter((account) => !account.archived)
-  const mutation = useMutation({ mutationFn: () => {
+  const mutation = useIdempotentMutation({ mutationFn: (_variables: void, write) => {
     const cents = toCents(amount)
     if (!cents) throw new Error("请输入正确的还款金额")
-    if (event) return api.updateRepayment(event.id, { version: debt.version, amountCents: cents, effectiveOn: date, note, accountId: accountId || undefined, movementType: convertsToAddition ? "addition" : undefined })
+    if (event) return api.updateRepayment(event.id, { version: debt.version, amountCents: cents, effectiveOn: date, note, accountId: accountId || undefined, movementType: convertsToAddition ? "addition" : undefined }, write)
     if (!accountId) throw new Error(`请选择${repaymentAccountLabel(debt.direction)}`)
-    return api.createRepayment(debt.id, { accountId, amountCents: cents, effectiveOn: date, note })
+    return api.createRepayment(debt.id, { accountId, amountCents: cents, effectiveOn: date, note }, write)
   }, onSuccess: async () => { await onSaved(); onOpenChange(false); toast({ title: editing ? "还款记录已更新" : "还款已登记", type: "success" }) }, onError: (cause) => { setError(cause instanceof Error ? cause.message : editing ? "更新失败" : "登记失败"); if (cause instanceof ApiClientError && cause.status === 409) void onSaved() } })
   useEffect(() => { if (open) { setAmount(event ? String(event.amountCents / 100) : ""); setDate(event?.effectiveOn || today()); setNote(event?.note || ""); setAccountId(event?.account?.id || ""); setMovementType("repayment"); setError("") } }, [open, event])
   return <Modal open={open} onOpenChange={onOpenChange} title={editing ? convertsToAddition ? `编辑${additionLabel}` : "编辑还款记录" : "登记还款"} description={editing ? "可修改金额、账户、日期、备注和往来类型。" : `当前剩余 ${yuan(debt.remainingCents)}，禁止超额还款。`} footer={<><Button disabled={mutation.isPending} onClick={() => onOpenChange(false)}>取消</Button><Button disabled={mutation.isPending || accountsLoading || (!editing && activeAccounts.length === 0)} onClick={() => mutation.mutate()} variant="default">{mutation.isPending ? editing ? "正在保存…" : "正在登记…" : editing ? "保存修改" : "确认登记"}</Button></>}><div className="form-stack">{editing ? <Field className="field-medium" label="动作"><Select ariaLabel="动作" onValueChange={(value) => setMovementType(value as "addition" | "repayment")} options={[{ value: "repayment", label: "登记还款" }, { value: "addition", label: additionLabel }]} value={movementType} /></Field> : null}<MoneyAccountField accounts={accounts} allowEmpty={editing} label={convertsToAddition ? principalAccountLabel(debt.direction) : repaymentAccountLabel(debt.direction)} loading={accountsLoading} onManage={() => { onOpenChange(false); navigate("/app/accounts") }} onValueChange={setAccountId} value={accountId} /><Field label={`${convertsToAddition ? additionLabel : "还款"}金额（元）`}><Input inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} /></Field><Field label={convertsToAddition ? "追加日期" : "还款日期"}><DatePicker ariaLabel={convertsToAddition ? "追加日期" : "还款日期"} onValueChange={setDate} value={date} /></Field><Field label="备注"><Textarea value={note} onChange={(event) => setNote(event.target.value)} /></Field>{error ? <InlineNotice type="error">{error}</InlineNotice> : null}</div></Modal>
@@ -524,7 +525,7 @@ function RepaymentModal({ accounts, accountsLoading, debt, event, open, onOpenCh
 function RepaymentRow({ debt, event, onEdit, onSaved }: { debt: Debt; event: Debt["repayments"][number]; onEdit: (event: Debt["repayments"][number]) => void; onSaved: () => Promise<unknown> }) {
   const [confirm, setConfirm] = useState(false)
   const toast = useToast()
-  const mutation = useMutation({ mutationFn: () => api.reverseRepayment(event.id, { effectiveOn: today(), note: "撤销错误还款" }), onSuccess: async () => { await onSaved(); setConfirm(false); toast({ title: "还款已撤销", type: "success" }) }, onError: (error) => toast({ title: "撤销失败", description: error.message, type: "error" }) })
+  const mutation = useIdempotentMutation({ mutationFn: (_variables: void, write) => api.reverseRepayment(event.id, { effectiveOn: today(), note: "撤销错误还款" }, write), onSuccess: async () => { await onSaved(); setConfirm(false); toast({ title: "还款已撤销", type: "success" }) }, onError: (error) => toast({ title: "撤销失败", description: error.message, type: "error" }) })
   const isPayment = event.kind === "payment"
   const canEdit = isPayment && !event.reversed && !debt.archived
   const label = `${isPayment ? "" : "原"}${repaymentAccountLabel(debt.direction)}`

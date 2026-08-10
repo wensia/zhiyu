@@ -19,6 +19,8 @@ const LEDGER_ACCOUNT_CARD_NUMBER_MIGRATION: &str =
     include_str!("../migrations/0007_ledger_account_card_number.sql");
 const DEBT_ORIGIN_KIND_MIGRATION: &str = include_str!("../migrations/0008_debt_origin_kind.sql");
 const TRANSACTIONS_MIGRATION: &str = include_str!("../migrations/0009_transactions.sql");
+const API_KEYS_MIGRATION: &str = include_str!("../migrations/0010_api_keys.sql");
+const HANDOFF_TICKETS_MIGRATION: &str = include_str!("../migrations/0011_handoff_tickets.sql");
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, INITIAL_MIGRATION),
     (2, DEBT_ADDITIONS_MIGRATION),
@@ -29,6 +31,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (7, LEDGER_ACCOUNT_CARD_NUMBER_MIGRATION),
     (8, DEBT_ORIGIN_KIND_MIGRATION),
     (9, TRANSACTIONS_MIGRATION),
+    (10, API_KEYS_MIGRATION),
+    (11, HANDOFF_TICKETS_MIGRATION),
 ];
 
 /// 返回当前程序认识的全部迁移版本，供离线恢复判断备份是否可安全打开。
@@ -209,7 +213,7 @@ mod tests {
         while let Some(row) = versions.next().await.unwrap() {
             applied.push(row.get::<i64>(0).unwrap());
         }
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         let mut tables = conn
             .query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'debt_addition_events'",
@@ -750,7 +754,7 @@ mod tests {
         while let Some(row) = versions.next().await.unwrap() {
             applied.push(row.get::<i64>(0).unwrap());
         }
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 
         for (kind, name) in [
             ("table", "ledger_transactions"),

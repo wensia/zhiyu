@@ -32,7 +32,9 @@ async fn main() -> Result<()> {
         config: Arc::new(config),
         email: Arc::new(email),
         rate_limiter: RateLimiter::default(),
+        backup_status: Default::default(),
     };
+    zhiyu_api::backup::spawn_backup_scheduler(state.clone());
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "zhiyu API listening");
     axum::serve(listener, app(state).into_make_service()).await?;

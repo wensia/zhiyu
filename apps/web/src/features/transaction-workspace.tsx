@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query"
+import { useQuery, useQueryClient } from "@tanstack/react-query"
 import {
   CalendarDaysIcon,
   ChevronLeftIcon,
@@ -11,6 +11,7 @@ import {
 import { useEffect, useMemo, useState } from "react"
 
 import { ApiClientError, api } from "../api/client"
+import { useIdempotentMutation } from "../api/use-idempotent-mutation"
 import type {
   LedgerAccount,
   LedgerTransaction,
@@ -498,8 +499,8 @@ function TransactionFormModal({
   const categoryOptions = categories.map((value) => ({ value, label: value }))
   const accountOptions = accounts.filter((account) => !account.archived).map((account) => ({ value: account.id, label: `${account.name} · 余额 ${yuan(account.balanceCents)}` }))
 
-  const mutation = useMutation({
-    mutationFn: async () => {
+  const mutation = useIdempotentMutation({
+    mutationFn: async (_variables: void, write) => {
       const amountCents = toCents(amount)
       if (!occurredOn) throw new Error("请选择发生日期")
       const category = (categoryValue || categoryText).trim()
@@ -511,8 +512,8 @@ function TransactionFormModal({
         accountId: accountId || null,
         note: note.trim(),
       }
-      if (transaction) return api.updateTransaction(transaction.id, { ...input, version: transaction.version })
-      return api.createTransaction(input)
+      if (transaction) return api.updateTransaction(transaction.id, { ...input, version: transaction.version }, write)
+      return api.createTransaction(input, write)
     },
     onSuccess: async () => {
       await onSaved()
@@ -613,9 +614,9 @@ export function TransactionWorkspace() {
     queryClient.invalidateQueries({ queryKey: ["ledger-accounts"] }),
   ])
 
-  const restoreMutation = useMutation({
-    mutationFn: (transaction: Pick<LedgerTransaction, "id" | "version">) =>
-      api.restoreTransaction(transaction.id, transaction.version),
+  const restoreMutation = useIdempotentMutation({
+    mutationFn: (transaction: Pick<LedgerTransaction, "id" | "version">, write) =>
+      api.restoreTransaction(transaction.id, transaction.version, write),
     onSuccess: async () => {
       await refresh()
       toast({ title: "已撤销删除", type: "success" })
@@ -626,8 +627,8 @@ export function TransactionWorkspace() {
     },
   })
 
-  const deleteMutation = useMutation({
-    mutationFn: (transaction: LedgerTransaction) => api.deleteTransaction(transaction.id, transaction.version),
+  const deleteMutation = useIdempotentMutation({
+    mutationFn: (transaction: LedgerTransaction, write) => api.deleteTransaction(transaction.id, transaction.version, write),
     onSuccess: async (_result, transaction) => {
       await refresh()
       setDeleting(undefined)
