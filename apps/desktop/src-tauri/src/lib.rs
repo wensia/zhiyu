@@ -106,24 +106,31 @@ fn handoff_initialization_script(ticket: &HandoffTicket, failure_reason: &str) -
       (location.protocol === "http:" && location.hostname === "tauri.localhost");
     return local && location.pathname === "/" + page;
   }}
+  function whenReady(run) {{
+    if (document.readyState === "loading") {{
+      document.addEventListener("DOMContentLoaded", run, {{ once: true }});
+    }} else {{
+      run();
+    }}
+  }}
   if (isLocal("handoff.html")) {{
-    document.addEventListener("DOMContentLoaded", function () {{
+    whenReady(function () {{
       var form = document.getElementById("handoff-form");
       form.action = {endpoint};
       form.elements.ticket.value = {ticket};
       form.submit();
-    }}, {{ once: true }});
+    }});
     return;
   }}
   if (isLocal("error.html")) {{
-    document.addEventListener("DOMContentLoaded", function () {{
+    whenReady(function () {{
       var reasons = {{
         "#cookie-readback": {failure_reason},
         "#session-expired": "桌面会话已失效；已阻止显示邮箱登录页。请重新保存连接设置。",
         "#timeout": "桌面交接页在 20 秒内没有完成表单提交与 cookie 确认；已阻止加载邮箱登录页。"
       }};
       document.getElementById("failure-reason").textContent = reasons[location.hash] || {failure_reason};
-    }}, {{ once: true }});
+    }});
   }}
 }})();"##
     ))
@@ -259,6 +266,10 @@ fn open_handoff_window(
 
     let window = main_window_builder(app, WebviewUrl::App("index.html".into()))
         .visible(false)
+        // 交接窗口在 cookie 确认前保持隐藏，而 Tauri 默认的 Suspend 策略会把不在
+        // 窗口里的 webview 任务完全挂起——跳板页的表单提交脚本因此根本不执行，
+        // 表现为交接 20 秒超时而服务端从未收到请求。
+        .background_throttling(tauri::utils::config::BackgroundThrottlingPolicy::Disabled)
         .initialization_script(initialization_script)
         .on_web_resource_request(move |request, response| {
             if request.uri().path() == "/handoff.html" {
@@ -300,6 +311,12 @@ fn open_handoff_window(
                     let _ = window.show();
                 }
                 return false;
+            }
+
+            // 交接请求自身要放行：cookie 由它的 303 响应种下，此刻检查必然为空。
+            // 等浏览器跟随重定向回到应用页面时，下面的 gate 才做确认。
+            if url.path().starts_with("/desktop/handoff") {
+                return true;
             }
 
             let mut gate = match navigation_gate.lock() {
@@ -354,7 +371,10 @@ fn open_handoff_window(
         .build()?;
 
     let previous_session_cookies = session_cookies_for_url(&window, &server_url)?;
-    let handoff_url = local_sibling_url(&window, "handoff.html")?;
+    let handoff_url = ticket
+        .server_url
+        .join(&format!("desktop/handoff/{}", ticket.ticket))
+        .context("无法构造桌面交接地址")?;
     let local_error_url = local_sibling_url(&window, "error.html")?;
     *error_url
         .lock()

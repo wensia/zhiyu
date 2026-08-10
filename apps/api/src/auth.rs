@@ -6,7 +6,7 @@ use argon2::{
 };
 use axum::{
     Form, Json,
-    extract::{FromRequestParts, State, rejection::FormRejection},
+    extract::{FromRequestParts, Path as AxumPath, State, rejection::FormRejection},
     http::{HeaderMap, HeaderValue, StatusCode, header, request::Parts},
     response::{IntoResponse, Response},
 };
@@ -419,6 +419,27 @@ pub async fn desktop_handoff(
     let Ok(Form(input)) = form else {
         return Ok(desktop_handoff_redirect(None));
     };
+    consume_desktop_handoff(state, input.ticket).await
+}
+
+/// 走 URL 路径的交接入口。
+///
+/// 表单版依赖跳板页里的 JS 按时执行，而那条链上每一环都可能失效：注入时机、
+/// DOM 就绪、隐藏窗口的后台节流策略、CSP form-action。实测中票据签发了却始终
+/// 没有被消费，服务端一条请求都没收到。改用一次普通 GET 导航，由浏览器引擎直接
+/// 跟随 303，不需要任何脚本。
+///
+/// 票据因此出现在 URL 路径里，可接受：60 秒、单次消费、且服务端对该路径的
+/// 访问日志做脱敏。
+pub async fn desktop_handoff_by_path(
+    State(state): State<AppState>,
+    AxumPath(ticket): AxumPath<String>,
+) -> Result<Response, ApiError> {
+    consume_desktop_handoff(state, ticket).await
+}
+
+async fn consume_desktop_handoff(state: AppState, ticket: String) -> Result<Response, ApiError> {
+    let input = HandoffTicketForm { ticket };
     if input.ticket.is_empty() {
         return Ok(desktop_handoff_redirect(None));
     }

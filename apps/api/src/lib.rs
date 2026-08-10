@@ -220,6 +220,10 @@ pub fn app(state: AppState) -> Router {
         .route("/health/ready", get(readiness))
         .route("/desktop/handoff", post(auth::desktop_handoff))
         .route(
+            "/desktop/handoff/{ticket}",
+            get(auth::desktop_handoff_by_path),
+        )
+        .route(
             "/api/openapi.json",
             get(|| async { Json(ApiDoc::openapi()) }),
         )
@@ -264,7 +268,7 @@ async fn csrf_guard(
     next: Next,
 ) -> Response {
     let path = request.uri().path();
-    if path == "/desktop/handoff" {
+    if path == "/desktop/handoff" || path.starts_with("/desktop/handoff/") {
         // 该请求来自 Tauri 本地跳板页，Origin 天然不等于 public_base_url。
         // 60 秒、不可预测且单次消费的票据就是此路径的防伪凭证。这里也必须完全
         // 忽略旧 session cookie，避免无效票据被 cookie 认证或续期响应掩盖。
