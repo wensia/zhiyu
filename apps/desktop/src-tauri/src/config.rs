@@ -146,6 +146,37 @@ pub fn save_connection(path: &Path, server_url: &Url, api_key: &str) -> Result<O
     Ok(keychain_warning)
 }
 
+pub fn clear_connection(path: &Path) -> Result<Option<String>> {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(error).with_context(|| format!("无法删除连接配置 {}", path.display()));
+        }
+    }
+    let partial = path.with_extension("json.partial");
+    let mut warnings = Vec::new();
+    match fs::remove_file(&partial) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => warnings.push(format!(
+            "删除未完成的连接配置 {} 失败：{error}",
+            partial.display()
+        )),
+    }
+
+    match Entry::new(KEYRING_SERVICE, KEYRING_USER) {
+        Ok(entry) => match entry.delete_credential() {
+            Ok(()) | Err(KeyringError::NoEntry) => {}
+            Err(error) => warnings.push(format!("删除 macOS Keychain 中的 api-key 失败：{error}")),
+        },
+        Err(error) => warnings.push(format!(
+            "访问 macOS Keychain 失败，无法删除 api-key：{error}"
+        )),
+    }
+    Ok((!warnings.is_empty()).then(|| warnings.join("；")))
+}
+
 pub fn write_private_json(path: &Path, value: &impl Serialize) -> Result<()> {
     let parent = path.parent().context("配置文件路径没有父目录")?;
     fs::create_dir_all(parent).with_context(|| format!("无法创建配置目录 {}", parent.display()))?;

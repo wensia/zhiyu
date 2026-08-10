@@ -16,6 +16,7 @@ use tauri::{
 use tracing_subscriber::EnvFilter;
 
 const SETTINGS_MENU_ID: &str = "connection-settings";
+const DISCONNECT_MENU_ID: &str = "disconnect-server";
 const SESSION_COOKIE_NAMES: [&str; 2] = ["__Host-zhiyu_session", "zhiyu_session"];
 const HANDOFF_PAGE_TIMEOUT: Duration = Duration::from_secs(20);
 fn window_chrome_script(server_url: &Url) -> Result<String> {
@@ -23,7 +24,7 @@ fn window_chrome_script(server_url: &Url) -> Result<String> {
     Ok(format!(
         r##"(function () {{
   if (location.origin !== {origin}) return;
-  var css = ".sidebar{{padding-top:34px}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}";
+  var css = ".sidebar{{padding-top:34px}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}.sidebar-logout{{display:none}}";
   function inject() {{
     if (document.getElementById("zhiyu-desktop-chrome")) return;
     var style = document.createElement("style");
@@ -200,6 +201,71 @@ fn close_main_window(app: &AppHandle) -> Result<()> {
     if let Some(window) = app.get_webview_window("main") {
         window.close().context("关闭旧主窗口失败")?;
     }
+    Ok(())
+}
+
+fn show_native_alert(window: &WebviewWindow, message: &str) {
+    let Ok(message) = serde_json::to_string(message) else {
+        return;
+    };
+    if let Err(error) = window.eval(format!("window.alert({message})")) {
+        tracing::error!(error = %error, "showing native alert failed");
+    }
+}
+
+fn disconnect_from_server(app: &AppHandle) -> Result<()> {
+    let client = app.state::<BackupClient>().inner().clone();
+    let (server_url, credential_warning) = client.clear_connection()?;
+
+    if let (Some(window), Some(server_url)) = (app.get_webview_window("main"), server_url) {
+        match session_cookies_for_url(&window, &server_url) {
+            Ok(cookies) => {
+                tauri::async_runtime::spawn(async move {
+                    if let Err(error) = client.logout_session(server_url, cookies).await {
+                        tracing::warn!(error = %error, "best-effort desktop session logout failed");
+                    }
+                });
+            }
+            Err(error) => {
+                tracing::warn!(error = %error, "best-effort desktop session cookie readback failed");
+            }
+        }
+    }
+
+    let close_result = close_main_window(app);
+    let open_result = open_settings_window(app);
+    close_result?;
+    open_result?;
+    if let Some(warning) = credential_warning
+        && let Some(window) = app.get_webview_window("settings")
+    {
+        show_native_alert(&window, &format!("连接配置已清除，但{warning}"));
+    }
+    Ok(())
+}
+
+fn confirm_disconnect(app: &AppHandle) -> Result<()> {
+    let window = if let Some(window) = app.get_webview_window("main") {
+        window
+    } else {
+        open_settings_window(app)?;
+        app.get_webview_window("settings")
+            .context("连接设置窗口创建后不可用")?
+    };
+    let handle = app.clone();
+    let error_window = window.clone();
+    window.eval_with_callback(
+        "window.confirm('断开与服务器的连接？\\n这会清除本机保存的服务器配置和 api-key。')",
+        move |value| {
+            if serde_json::from_str::<bool>(&value).unwrap_or(false)
+                && let Err(error) = disconnect_from_server(&handle)
+            {
+                let readable = format!("断开连接失败：{error:#}");
+                tracing::error!(error = %readable, "disconnecting desktop from server failed");
+                show_native_alert(&error_window, &readable);
+            }
+        },
+    )?;
     Ok(())
 }
 
@@ -463,10 +529,14 @@ pub fn run() {
             let settings_item = MenuItemBuilder::with_id(SETTINGS_MENU_ID, "连接设置…")
                 .accelerator("CmdOrCtrl+Comma")
                 .build(app)?;
+            let disconnect_item =
+                MenuItemBuilder::with_id(DISCONNECT_MENU_ID, "断开连接").build(app)?;
             let app_menu = SubmenuBuilder::new(app, "知余")
                 .about(None)
                 .separator()
                 .item(&settings_item)
+                .separator()
+                .item(&disconnect_item)
                 .separator()
                 .quit()
                 .build()?;
@@ -488,12 +558,18 @@ pub fn run() {
                     .items(&[&app_menu, &edit_menu, &window_menu])
                     .build()?,
             )?;
-            app.on_menu_event(|handle, event| {
-                if event.id().as_ref() == SETTINGS_MENU_ID
-                    && let Err(error) = open_settings_window(handle)
-                {
-                    tracing::error!(error = %error, "opening connection settings failed");
+            app.on_menu_event(|handle, event| match event.id().as_ref() {
+                SETTINGS_MENU_ID => {
+                    if let Err(error) = open_settings_window(handle) {
+                        tracing::error!(error = %error, "opening connection settings failed");
+                    }
                 }
+                DISCONNECT_MENU_ID => {
+                    if let Err(error) = confirm_disconnect(handle) {
+                        tracing::error!(error = %error, "opening disconnect confirmation failed");
+                    }
+                }
+                _ => {}
             });
 
             if needs_settings {
@@ -508,8 +584,34 @@ pub fn run() {
             }
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("启动知余桌面版失败");
+        .build(tauri::generate_context!())
+        .expect("构建知余桌面版失败")
+        .run(|app, event| match event {
+            tauri::RunEvent::ExitRequested {
+                code: None, api, ..
+            } => {
+                #[cfg(target_os = "macos")]
+                api.prevent_exit();
+            }
+            #[cfg(target_os = "macos")]
+            tauri::RunEvent::Reopen {
+                has_visible_windows: false,
+                ..
+            } => {
+                let client = app.state::<BackupClient>().inner().clone();
+                if client.has_connection_config() {
+                    if app.get_webview_window("main").is_none() {
+                        let handle = app.clone();
+                        tauri::async_runtime::spawn(async move {
+                            handoff_main_window_session(&handle, &client).await;
+                        });
+                    }
+                } else if let Err(error) = open_settings_window(app) {
+                    tracing::error!(error = %error, "reopening connection settings failed");
+                }
+            }
+            _ => {}
+        });
 }
 
 #[cfg(test)]
@@ -532,6 +634,9 @@ mod tests {
             handoff_csp(&ticket.server_url),
             "default-src 'none'; form-action https://zhiyu.example.com"
         );
+        let chrome_script = window_chrome_script(&ticket.server_url).unwrap();
+        assert!(chrome_script.contains("location.origin !== \"https://zhiyu.example.com\""));
+        assert!(chrome_script.contains(".sidebar-logout{display:none}"));
         let html = include_str!("../../placeholder/handoff.html");
         assert_eq!(html.matches("<form").count(), 1);
         assert!(!html.contains("http://"));

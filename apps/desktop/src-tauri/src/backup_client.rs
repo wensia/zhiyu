@@ -20,7 +20,8 @@ use tokio::{
 use zhiyu_backup_policy::{Snapshot as RetentionSnapshot, plan_retention};
 
 use crate::config::{
-    load_config, resolve_connection, save_connection, validate_server_url, write_private_json,
+    clear_connection, load_config, resolve_connection, save_connection, validate_server_url,
+    write_private_json,
 };
 
 const RETENTION_DAYS: i64 = 30;
@@ -120,6 +121,41 @@ impl BackupClient {
 
     pub fn has_connection_config(&self) -> bool {
         resolve_connection(&self.config_path).is_ok()
+    }
+
+    pub(crate) fn clear_connection(&self) -> Result<(Option<Url>, Option<String>)> {
+        let server_url = load_config(&self.config_path)
+            .ok()
+            .and_then(|config| validate_server_url(&config.server_url).ok());
+        let warning = clear_connection(&self.config_path)?;
+        Ok((server_url, warning))
+    }
+
+    pub(crate) async fn logout_session(
+        &self,
+        server_url: Url,
+        session_cookies: Vec<(String, String)>,
+    ) -> Result<()> {
+        if session_cookies.is_empty() {
+            bail!("主窗口中没有可用于退出的 session cookie");
+        }
+        let origin = server_url.origin().ascii_serialization();
+        let cookie = session_cookies
+            .into_iter()
+            .map(|(name, value)| format!("{name}={value}"))
+            .collect::<Vec<_>>()
+            .join("; ");
+        let response = self
+            .http
+            .post(endpoint(&server_url, "api/v1/auth/logout")?)
+            .header(reqwest::header::ORIGIN, origin)
+            .header(reqwest::header::COOKIE, cookie)
+            .timeout(SESSION_HANDOFF_TIMEOUT)
+            .send()
+            .await
+            .context("请求服务端退出当前 session 失败")?;
+        require_success(response, "退出当前桌面 session").await?;
+        Ok(())
     }
 
     pub(crate) async fn create_handoff_ticket(&self) -> Result<HandoffTicket> {

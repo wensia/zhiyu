@@ -108,3 +108,11 @@ describe("AppShell sidebar toggle", () => {
     )
   })
 })
+
+describe("AppShell navigation groups", () => {
+  it("does not render a group label when navigation has only one group", () => {
+    const { container } = renderShell()
+
+    expect(container.querySelector(".nav-group-label")).not.toBeInTheDocument()
+  })
+})

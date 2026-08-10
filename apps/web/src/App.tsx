@@ -104,7 +104,7 @@ export function AppShell() {
         </div>
         {navigationGroups.map((group) => (
           <div className="nav-group" key={group}>
-            <span className="nav-group-label">{group}</span>
+            {navigationGroups.length >= 2 ? <span className="nav-group-label">{group}</span> : null}
             <nav>
               {navigationItems.map((item, index) => {
                 if (item.group !== group) return null
