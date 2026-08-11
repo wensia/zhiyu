@@ -1,6 +1,7 @@
 pub mod accounts;
 pub mod auth;
 pub mod backup;
+pub mod bill_inbox;
 pub mod config;
 pub mod db;
 pub mod debts;
@@ -90,7 +91,8 @@ impl Modify for SecurityAddon {
         transactions::list_transactions, transactions::create_transaction, transactions::update_transaction,
         transactions::delete_transaction, transactions::restore_transaction, transactions::transaction_summary,
         transactions::list_transaction_categories,
-        backup::list_backups, backup::backup_status, backup::download_backup
+        backup::list_backups, backup::backup_status, backup::download_backup,
+        bill_inbox::status, bill_inbox::list_messages
     ),
     components(schemas(
         domain::UserView, auth::SessionFromKeyResponse, auth::SessionCookieView,
@@ -109,7 +111,9 @@ impl Modify for SecurityAddon {
         domain::TransactionKind, domain::LedgerTransactionView, domain::TransactionListResponse,
         domain::CreateTransactionRequest, domain::UpdateTransactionRequest,
         domain::TransactionDaySummary, domain::TransactionCategorySummary, domain::TransactionMonthSummary,
-        backup::BackupListItem, backup::BackupRuntimeStatus
+        backup::BackupListItem, backup::BackupRuntimeStatus,
+        bill_inbox::BillInboxStatus, bill_inbox::BillInboxMessageList,
+        bill_inbox::BillInboxMessageView, bill_inbox::BillInboxAttachmentView
     )),
     modifiers(&SecurityAddon),
     tags((name = "知余", description = "个人债务管理 API"))
@@ -186,7 +190,9 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/backups", get(backup::list_backups))
         .route("/backups/status", get(backup::backup_status))
-        .route("/backups/{id}", get(backup::download_backup));
+        .route("/backups/{id}", get(backup::download_backup))
+        .route("/bill-inbox/status", get(bill_inbox::status))
+        .route("/bill-inbox/messages", get(bill_inbox::list_messages));
 
     // 静态资源必须显式声明缓存策略。tower-http 默认什么都不设，客户端于是退回
     // 启发式缓存——按 (now - last_modified) * 10% 自行推算过期时间。实测中 WKWebView

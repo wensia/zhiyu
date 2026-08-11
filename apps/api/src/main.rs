@@ -35,6 +35,7 @@ async fn main() -> Result<()> {
         backup_status: Default::default(),
     };
     zhiyu_api::backup::spawn_backup_scheduler(state.clone());
+    zhiyu_api::bill_inbox::spawn_scheduler(state.clone());
     let listener = tokio::net::TcpListener::bind(address).await?;
     tracing::info!(%address, "zhiyu API listening");
     axum::serve(listener, app(state).into_make_service()).await?;

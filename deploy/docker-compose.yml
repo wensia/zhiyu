@@ -14,9 +14,18 @@ services:
       DATABASE_URL: file:/data/preview.db
       DEV_MAIL_DIR: /data/dev-mail
       WEB_DIST_DIR: /app/web
+      BILL_INBOX_JMAP_SESSION_URL: ${BILL_INBOX_JMAP_SESSION_URL:-}
+      BILL_INBOX_USERNAME: ${BILL_INBOX_USERNAME:-}
+      BILL_INBOX_PASSWORD_FILE: ${BILL_INBOX_PASSWORD_FILE:+/run/secrets/bill_inbox_password}
+      BILL_INBOX_ADDRESS: ${BILL_INBOX_ADDRESS:-}
+      BILL_INBOX_OWNER_EMAIL: ${BILL_INBOX_OWNER_EMAIL:-}
+      BILL_INBOX_POLL_INTERVAL_SECONDS: ${BILL_INBOX_POLL_INTERVAL_SECONDS:-}
+      BILL_INBOX_MAX_MESSAGE_BYTES: ${BILL_INBOX_MAX_MESSAGE_BYTES:-}
       RUST_LOG: zhiyu_api=info,tower_http=info
     volumes:
       - /opt/zhiyu/data:/data
+    secrets:
+      - bill_inbox_password
     expose:
       - "8790"
     networks:
@@ -26,3 +35,7 @@ networks:
   ai-ditui:
     external: true
     name: ai-ditui_default
+
+secrets:
+  bill_inbox_password:
+    file: ${BILL_INBOX_PASSWORD_FILE:-/dev/null}

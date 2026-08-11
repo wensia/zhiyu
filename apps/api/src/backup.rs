@@ -26,6 +26,7 @@ use chrono::{DateTime, SecondsFormat, Utc};
 use libsql::Database;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::RwLock;
 use tokio_util::io::ReaderStream;
 use utoipa::ToSchema;
@@ -38,6 +39,7 @@ pub const BACKUP_RETENTION_DAYS: i64 = 30;
 pub const SNAPSHOT_FILE_PREFIX: &str = "zhiyu-";
 pub const SNAPSHOT_FILE_SUFFIX: &str = ".db";
 pub const MANIFEST_FILE_SUFFIX: &str = ".manifest.json";
+const BILL_INBOX_BACKUP_OWNER_FILE: &str = ".bill-inbox-owner.json";
 
 /// 快照旁边那份 manifest 的格式版本。恢复时先看它，不认识就直接拒绝。
 pub const BACKUP_FORMAT_VERSION: u32 = 1;
@@ -92,6 +94,13 @@ pub struct BackupListItem {
     pub schema_version: i64,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct BillInboxBackupOwnerMarker {
+    version: u32,
+    owner_email: String,
+}
+
 impl BackupStatusStore {
     pub async fn get(&self) -> BackupRuntimeStatus {
         self.0.read().await.clone()
@@ -133,6 +142,148 @@ pub fn backup_directory(config: &Config) -> Result<PathBuf> {
         .parent()
         .context("DATABASE_URL 没有数据目录")?;
     Ok(parent.join("backups"))
+}
+
+fn has_local_backup_storage(config: &Config) -> bool {
+    !(config.database_url.starts_with("libsql://")
+        || config.database_url.starts_with("https://")
+        || config.database_url.strip_prefix("file:") == Some(":memory:")
+        || config.database_url == ":memory:")
+}
+
+async fn read_bill_inbox_backup_owner(config: &Config) -> Result<Option<String>> {
+    if !has_local_backup_storage(config) {
+        return Ok(None);
+    }
+    let path = backup_directory(config)?.join(BILL_INBOX_BACKUP_OWNER_FILE);
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("无法读取账单备份所有者标记 {}", path.display()));
+        }
+    };
+    let marker: BillInboxBackupOwnerMarker = serde_json::from_slice(&bytes)
+        .with_context(|| format!("账单备份所有者标记损坏 {}", path.display()))?;
+    if marker.version != 1 {
+        bail!("不支持的账单备份所有者标记版本 {}", marker.version);
+    }
+    let owner_email = crate::domain::validate_email(&marker.owner_email)
+        .map_err(|_| anyhow!("账单备份所有者标记中的邮箱无效"))?;
+    Ok(Some(owner_email))
+}
+
+async fn sync_directory(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        tokio::fs::File::open(path).await?.sync_all().await?;
+    }
+    Ok(())
+}
+
+/// 在任何账单原文进入数据库前，把整库备份的唯一所有者写到数据库之外。
+///
+/// 该标记与快照同目录，因此数据库恢复到旧版本、删除用户或临时关闭同步都不会让
+/// 历史 raw BLOB 的下载权限退回为「任意已验证用户」。所有者变更必须人工迁移，
+/// 这里遇到不一致时一律失败关闭。
+pub(crate) async fn persist_bill_inbox_backup_owner(
+    state: &AppState,
+    owner_email: &str,
+) -> Result<()> {
+    // 远程 libSQL/内存数据库没有本地整库快照目录，也就不存在本标记要防护的下载面。
+    if !has_local_backup_storage(&state.config) {
+        return Ok(());
+    }
+    let owner_email = crate::domain::validate_email(owner_email)
+        .map_err(|_| anyhow!("账单备份所有者邮箱无效"))?;
+    if let Some(existing) = read_bill_inbox_backup_owner(&state.config).await? {
+        if existing == owner_email {
+            return Ok(());
+        }
+        bail!("账单备份所有者与已持久化标记不一致");
+    }
+
+    let backup_dir = backup_directory(&state.config)?;
+    tokio::fs::create_dir_all(&backup_dir)
+        .await
+        .with_context(|| format!("无法创建备份目录 {}", backup_dir.display()))?;
+    let destination = backup_dir.join(BILL_INBOX_BACKUP_OWNER_FILE);
+    let temporary = backup_dir.join(format!(".bill-inbox-owner-{}.partial", Uuid::now_v7()));
+    let marker = serde_json::to_vec_pretty(&BillInboxBackupOwnerMarker {
+        version: 1,
+        owner_email: owner_email.clone(),
+    })?;
+
+    let mut options = tokio::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        options.mode(0o600);
+    }
+    let mut file = options
+        .open(&temporary)
+        .await
+        .with_context(|| format!("无法创建账单备份所有者标记 {}", temporary.display()))?;
+    if let Err(error) = async {
+        file.write_all(&marker).await?;
+        file.write_all(b"\n").await?;
+        file.sync_all().await?;
+        drop(file);
+        Ok::<_, std::io::Error>(())
+    }
+    .await
+    {
+        tokio::fs::remove_file(&temporary).await.ok();
+        return Err(error)
+            .with_context(|| format!("无法发布账单备份所有者标记 {}", destination.display()));
+    }
+    match tokio::fs::hard_link(&temporary, &destination).await {
+        Ok(()) => {
+            tokio::fs::remove_file(&temporary).await?;
+            sync_directory(&backup_dir).await?;
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            tokio::fs::remove_file(&temporary).await.ok();
+            match read_bill_inbox_backup_owner(&state.config).await? {
+                Some(existing) if existing == owner_email => Ok(()),
+                Some(_) => bail!("账单备份所有者与并发发布的标记不一致"),
+                None => bail!("账单备份所有者标记并发发布失败"),
+            }
+        }
+        Err(error) => {
+            tokio::fs::remove_file(&temporary).await.ok();
+            Err(error).with_context(|| {
+                format!("无法原子发布账单备份所有者标记 {}", destination.display())
+            })
+        }
+    }
+}
+
+async fn persist_current_bill_inbox_backup_owner(state: &AppState) -> Result<()> {
+    let mut owners = std::collections::HashSet::new();
+    if let Some(config) = state.config.bill_inbox.as_ref() {
+        owners.insert(config.owner_email.clone());
+    }
+    let conn = state
+        .connection()
+        .await
+        .map_err(|error| anyhow!(error.message))?;
+    let mut rows = conn
+        .query(
+            "SELECT DISTINCT u.email FROM users u JOIN (SELECT user_id FROM bill_inbox_sync_state UNION SELECT user_id FROM bill_inbox_messages) inbox_owner ON inbox_owner.user_id = u.id LIMIT 2",
+            (),
+        )
+        .await?;
+    while let Some(row) = rows.next().await? {
+        owners.insert(row.get::<String>(0)?);
+    }
+    match owners.len() {
+        0 => Ok(()),
+        1 => persist_bill_inbox_backup_owner(state, owners.iter().next().unwrap()).await,
+        _ => bail!("数据库中存在多个账单备份所有者，拒绝生成整库快照"),
+    }
 }
 
 pub fn snapshot_id_at(now: DateTime<Utc>) -> String {
@@ -296,6 +447,7 @@ async fn apply_retention(backup_dir: &Path, now: DateTime<Utc>) -> Result<Vec<Ma
 pub async fn run_backup_cycle(state: &AppState, now: DateTime<Utc>) -> Result<()> {
     state.backup_status.started(now).await;
     let result = async {
+        persist_current_bill_inbox_backup_owner(state).await?;
         let backup_dir = backup_directory(&state.config)?;
         let existing = list_managed_snapshots(&backup_dir).await?;
         if !existing
@@ -334,13 +486,14 @@ pub fn spawn_backup_scheduler(state: AppState) {
 #[utoipa::path(
     get,
     path = "/api/v1/backups",
-    responses((status = 200, body = [BackupListItem]), (status = 401, body = crate::error::ErrorBody)),
+    responses((status = 200, body = [BackupListItem]), (status = 401, body = crate::error::ErrorBody), (status = 403, body = crate::error::ErrorBody)),
     security(("cookieAuth" = []), ("bearerAuth" = []))
 )]
 pub async fn list_backups(
     State(state): State<AppState>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> Result<Json<Vec<BackupListItem>>, ApiError> {
+    require_backup_owner(&state, &user).await?;
     let backup_dir = backup_directory(&state.config).map_err(ApiError::internal)?;
     let snapshots = list_managed_snapshots(&backup_dir)
         .await
@@ -367,14 +520,15 @@ pub async fn list_backups(
 #[utoipa::path(
     get,
     path = "/api/v1/backups/status",
-    responses((status = 200, body = BackupRuntimeStatus), (status = 401, body = crate::error::ErrorBody)),
+    responses((status = 200, body = BackupRuntimeStatus), (status = 401, body = crate::error::ErrorBody), (status = 403, body = crate::error::ErrorBody)),
     security(("cookieAuth" = []), ("bearerAuth" = []))
 )]
 pub async fn backup_status(
     State(state): State<AppState>,
-    _user: AuthUser,
-) -> Json<BackupRuntimeStatus> {
-    Json(state.backup_status.get().await)
+    user: AuthUser,
+) -> Result<Json<BackupRuntimeStatus>, ApiError> {
+    require_backup_owner(&state, &user).await?;
+    Ok(Json(state.backup_status.get().await))
 }
 
 #[utoipa::path(
@@ -385,6 +539,7 @@ pub async fn backup_status(
         (status = 200, content_type = "application/octet-stream"),
         (status = 400, body = crate::error::ErrorBody),
         (status = 401, body = crate::error::ErrorBody),
+        (status = 403, body = crate::error::ErrorBody),
         (status = 404, body = crate::error::ErrorBody)
     ),
     security(("cookieAuth" = []), ("bearerAuth" = []))
@@ -392,8 +547,9 @@ pub async fn backup_status(
 pub async fn download_backup(
     State(state): State<AppState>,
     AxumPath(id): AxumPath<String>,
-    _user: AuthUser,
+    user: AuthUser,
 ) -> Result<Response, ApiError> {
+    require_backup_owner(&state, &user).await?;
     parse_snapshot_id(&id)
         .map_err(|_| ApiError::bad_request("invalid_backup_id", "备份 ID 格式不正确"))?;
     let backup_dir = backup_directory(&state.config).map_err(ApiError::internal)?;
@@ -420,6 +576,55 @@ pub async fn download_backup(
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from_stream(ReaderStream::new(file)))
         .map_err(ApiError::internal)
+}
+
+async fn require_backup_owner(state: &AppState, user: &AuthUser) -> Result<(), ApiError> {
+    if let Some(config) = state.config.bill_inbox.as_ref() {
+        if user.email != config.owner_email {
+            return Err(ApiError::forbidden("无权访问包含账单原文的数据库备份"));
+        }
+        persist_bill_inbox_backup_owner(state, &config.owner_email)
+            .await
+            .map_err(ApiError::internal)?;
+        return Ok(());
+    }
+
+    if let Some(owner_email) = read_bill_inbox_backup_owner(&state.config)
+        .await
+        .map_err(ApiError::internal)?
+    {
+        if user.email == owner_email {
+            return Ok(());
+        }
+        return Err(ApiError::forbidden("无权访问包含账单原文的数据库备份"));
+    }
+
+    // 同步被临时停用时，历史 raw BLOB 和已发布快照仍然存在，不能因为配置缺失
+    // 就把整库下载权限重新放给任意已验证用户。sync state 在首次成功连接后即持久化，
+    // 与 messages 做并集可覆盖空邮箱、已删邮件和已有原文三种状态。
+    let conn = state.connection().await?;
+    let mut rows = conn
+        .query(
+            "SELECT DISTINCT u.email FROM users u JOIN (SELECT user_id FROM bill_inbox_sync_state UNION SELECT user_id FROM bill_inbox_messages) owners ON owners.user_id = u.id LIMIT 2",
+            (),
+        )
+        .await?;
+    let mut owners = Vec::new();
+    while let Some(row) = rows.next().await? {
+        owners.push(row.get::<String>(0)?);
+    }
+    if owners.is_empty() {
+        return Ok(());
+    }
+    if owners.len() == 1 {
+        persist_bill_inbox_backup_owner(state, &owners[0])
+            .await
+            .map_err(ApiError::internal)?;
+        if owners[0] == user.email {
+            return Ok(());
+        }
+    }
+    Err(ApiError::forbidden("无权访问包含账单原文的数据库备份"))
 }
 
 /// 生成一份经过校验的快照，返回快照文件路径与其 manifest。
@@ -752,6 +957,7 @@ mod tests {
             turso_auth_token: None,
             dev_mail_dir: root.join("mail"),
             web_dist_dir: root.join("web"),
+            bill_inbox: None,
         };
         let db = crate::db::connect(&config).await.unwrap();
         AppState {
@@ -761,6 +967,138 @@ mod tests {
             rate_limiter: RateLimiter::default(),
             backup_status: BackupStatusStore::default(),
         }
+    }
+
+    #[tokio::test]
+    async fn bill_inbox_raw_backups_are_restricted_to_the_configured_owner() {
+        let root = tempfile::tempdir().unwrap();
+        let mut state = test_state(root.path()).await;
+        let mut config = (*state.config).clone();
+        config.bill_inbox = Some(crate::config::BillInboxConfig {
+            session_url: "https://mail.example.com/jmap/session".into(),
+            username: "bills@example.com".into(),
+            password: "secret".into(),
+            address: "bills@example.com".into(),
+            owner_email: "owner@example.com".into(),
+            poll_interval_seconds: 300,
+            max_message_bytes: 1024,
+        });
+        state.config = Arc::new(config);
+        let owner = AuthUser {
+            id: "owner".into(),
+            email: "owner@example.com".into(),
+            timezone: "Asia/Shanghai".into(),
+            session_hash: None,
+        };
+        let other = AuthUser {
+            id: "other".into(),
+            email: "other@example.com".into(),
+            timezone: "Asia/Shanghai".into(),
+            session_hash: None,
+        };
+
+        assert!(require_backup_owner(&state, &owner).await.is_ok());
+        assert_eq!(
+            require_backup_owner(&state, &other)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::FORBIDDEN
+        );
+
+        let conn = state.connection().await.unwrap();
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, email_verified_at, created_at, updated_at) VALUES ('owner', 'owner@example.com', 'hash', 'Asia/Shanghai', 'now', 'now', 'now')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bill_inbox_sync_state(user_id, jmap_account_id, email_state) VALUES ('owner', 'account-1', 'state-1')",
+            (),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+        let mut disabled_config = (*state.config).clone();
+        disabled_config.bill_inbox = None;
+        state.config = Arc::new(disabled_config);
+        assert!(require_backup_owner(&state, &owner).await.is_ok());
+        assert_eq!(
+            require_backup_owner(&state, &other)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::FORBIDDEN
+        );
+
+        // 即使后来恢复到没有 BillInbox 行的旧库，数据库之外的 marker 仍必须保护
+        // 已经发布、可能含 raw 邮件原文的历史快照。
+        let conn = state.connection().await.unwrap();
+        conn.execute("DELETE FROM bill_inbox_sync_state", ())
+            .await
+            .unwrap();
+        conn.execute("DELETE FROM users WHERE id = 'owner'", ())
+            .await
+            .unwrap();
+        drop(conn);
+        assert!(require_backup_owner(&state, &owner).await.is_ok());
+        assert_eq!(
+            require_backup_owner(&state, &other)
+                .await
+                .unwrap_err()
+                .status,
+            StatusCode::FORBIDDEN
+        );
+    }
+
+    #[tokio::test]
+    async fn backup_owner_marker_is_no_clobber_under_concurrent_first_writes() {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_state(root.path()).await;
+
+        let (first, second) = tokio::join!(
+            persist_bill_inbox_backup_owner(&state, "first@example.com"),
+            persist_bill_inbox_backup_owner(&state, "second@example.com")
+        );
+        assert_ne!(first.is_ok(), second.is_ok());
+        let stored = read_bill_inbox_backup_owner(&state.config)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            stored.as_str(),
+            "first@example.com" | "second@example.com"
+        ));
+    }
+
+    #[tokio::test]
+    async fn backup_cycle_persists_owner_from_live_inbox_before_snapshot() {
+        let root = tempfile::tempdir().unwrap();
+        let state = test_state(root.path()).await;
+        let conn = state.connection().await.unwrap();
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, email_verified_at, created_at, updated_at) VALUES ('owner', 'owner@example.com', 'hash', 'Asia/Shanghai', 'now', 'now', 'now')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bill_inbox_sync_state(user_id, jmap_account_id, email_state) VALUES ('owner', 'account-1', 'state-1')",
+            (),
+        )
+        .await
+        .unwrap();
+        drop(conn);
+
+        run_backup_cycle(&state, Utc::now()).await.unwrap();
+        assert_eq!(
+            read_bill_inbox_backup_owner(&state.config)
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("owner@example.com")
+        );
     }
 
     #[tokio::test]

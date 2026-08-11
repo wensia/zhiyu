@@ -21,6 +21,7 @@ const DEBT_ORIGIN_KIND_MIGRATION: &str = include_str!("../migrations/0008_debt_o
 const TRANSACTIONS_MIGRATION: &str = include_str!("../migrations/0009_transactions.sql");
 const API_KEYS_MIGRATION: &str = include_str!("../migrations/0010_api_keys.sql");
 const HANDOFF_TICKETS_MIGRATION: &str = include_str!("../migrations/0011_handoff_tickets.sql");
+const BILL_INBOX_MIGRATION: &str = include_str!("../migrations/0012_bill_inbox.sql");
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, INITIAL_MIGRATION),
     (2, DEBT_ADDITIONS_MIGRATION),
@@ -33,6 +34,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (9, TRANSACTIONS_MIGRATION),
     (10, API_KEYS_MIGRATION),
     (11, HANDOFF_TICKETS_MIGRATION),
+    (12, BILL_INBOX_MIGRATION),
 ];
 
 /// 返回当前程序认识的全部迁移版本，供离线恢复判断备份是否可安全打开。
@@ -139,9 +141,10 @@ mod tests {
     use libsql::Builder;
 
     use super::{
-        DEBT_ADDITIONS_MIGRATION, INITIAL_MIGRATION, LEDGER_ACCOUNT_DETAILS_MIGRATION,
-        LEDGER_ACCOUNT_NAME_SOURCE_MIGRATION, LEDGER_ACCOUNT_TYPES_MIGRATION,
-        LEDGER_ACCOUNTS_MIGRATION, MIGRATIONS, apply_migration, migrate, split_sql,
+        BILL_INBOX_MIGRATION, DEBT_ADDITIONS_MIGRATION, INITIAL_MIGRATION,
+        LEDGER_ACCOUNT_DETAILS_MIGRATION, LEDGER_ACCOUNT_NAME_SOURCE_MIGRATION,
+        LEDGER_ACCOUNT_TYPES_MIGRATION, LEDGER_ACCOUNTS_MIGRATION, MIGRATIONS, apply_migration,
+        migrate, split_sql,
     };
 
     #[test]
@@ -213,7 +216,7 @@ mod tests {
         while let Some(row) = versions.next().await.unwrap() {
             applied.push(row.get::<i64>(0).unwrap());
         }
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
         let mut tables = conn
             .query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'debt_addition_events'",
@@ -754,7 +757,7 @@ mod tests {
         while let Some(row) = versions.next().await.unwrap() {
             applied.push(row.get::<i64>(0).unwrap());
         }
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
 
         for (kind, name) in [
             ("table", "ledger_transactions"),
@@ -856,5 +859,107 @@ mod tests {
             .await
             .unwrap();
         assert!(rows.next().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn existing_v11_database_gains_bill_inbox_staging_tables_and_constraints() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(root.path().join("bill-inbox.db"))
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch(
+            "PRAGMA foreign_keys = ON;
+             CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL);",
+        )
+        .await
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().take(11) {
+            apply_migration(&conn, *version, sql).await.unwrap();
+        }
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, created_at, updated_at) VALUES ('u1', 'bill-owner@example.com', 'hash', 'Asia/Shanghai', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        apply_migration(&conn, 12, BILL_INBOX_MIGRATION)
+            .await
+            .unwrap();
+
+        for table in [
+            "bill_inbox_sync_state",
+            "bill_inbox_messages",
+            "bill_inbox_attachments",
+        ] {
+            let mut rows = conn
+                .query(
+                    "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?1",
+                    [table],
+                )
+                .await
+                .unwrap();
+            assert!(rows.next().await.unwrap().is_some(), "missing {table}");
+        }
+
+        conn.execute(
+            "INSERT INTO bill_inbox_sync_state(user_id, jmap_account_id, email_state, last_attempt_at, last_success_at) VALUES ('u1', 'account-1', 'state-1', '2026-08-11T00:00:00Z', '2026-08-11T00:00:01Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bill_inbox_messages(id, user_id, jmap_account_id, jmap_email_id, configured_address, raw_blob_id, received_at, size_bytes, raw_sha256, raw_content, raw_content_blob_id, status, created_at, updated_at) VALUES ('m1', 'u1', 'account-1', 'email-1', 'zhiyu-bills@example.com', 'blob-1', '2026-08-11T00:00:00Z', 3, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', X'726177', 'blob-1', 'pending', '2026-08-11T00:00:01Z', '2026-08-11T00:00:01Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bill_inbox_attachments(id, message_id, ordinal, part_id, blob_id, name, media_type, size_bytes) VALUES ('a1', 'm1', 0, '1', 'attachment-blob-1', 'statement.pdf', 'application/pdf', 1024)",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO bill_inbox_messages(id, user_id, jmap_account_id, jmap_email_id, configured_address, raw_blob_id, received_at, size_bytes, raw_sha256, raw_content, status, error_code, created_at, updated_at) VALUES ('m2', 'u1', 'account-1', 'email-2', 'zhiyu-bills@example.com', 'blob-2', '2026-08-11T00:00:02Z', 20000000, NULL, NULL, 'error', 'message_too_large', '2026-08-11T00:00:02Z', '2026-08-11T00:00:02Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        let duplicate_email = conn
+            .execute(
+                "INSERT INTO bill_inbox_messages(id, user_id, jmap_account_id, jmap_email_id, configured_address, raw_blob_id, received_at, size_bytes, status, created_at, updated_at) VALUES ('m3', 'u1', 'account-1', 'email-1', 'zhiyu-bills@example.com', 'blob-3', '2026-08-11T00:00:03Z', 3, 'pending', '2026-08-11T00:00:03Z', '2026-08-11T00:00:03Z')",
+                (),
+            )
+            .await;
+        assert!(duplicate_email.is_err());
+        let invalid_status = conn
+            .execute(
+                "UPDATE bill_inbox_messages SET status = 'imported' WHERE id = 'm1'",
+                (),
+            )
+            .await;
+        assert!(invalid_status.is_err());
+
+        conn.execute("DELETE FROM users WHERE id = 'u1'", ())
+            .await
+            .unwrap();
+        for table in [
+            "bill_inbox_sync_state",
+            "bill_inbox_messages",
+            "bill_inbox_attachments",
+        ] {
+            let mut rows = conn
+                .query(&format!("SELECT COUNT(*) FROM {table}"), ())
+                .await
+                .unwrap();
+            assert_eq!(
+                rows.next().await.unwrap().unwrap().get::<i64>(0).unwrap(),
+                0
+            );
+        }
     }
 }
