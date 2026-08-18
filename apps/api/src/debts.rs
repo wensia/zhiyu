@@ -2175,7 +2175,7 @@ async fn load_debt(
     include_events: bool,
 ) -> Result<DebtView, ApiError> {
     let mut rows = conn.query(
-        "SELECT d.id, d.direction, d.principal_cents, d.currency, d.occurred_on, d.due_on, d.note, d.archived_at, d.version, d.created_at, d.updated_at, c.id, c.display_name, b.paid_cents, b.remaining_cents, a.id, a.name, a.account_type, a.archived_at, d.origin_kind, d.transaction_id FROM debts d JOIN counterparties c ON c.id = d.counterparty_id JOIN debt_balances b ON b.debt_id = d.id LEFT JOIN ledger_accounts a ON a.id = d.account_id AND a.user_id = d.user_id WHERE d.id = ?1 AND d.user_id = ?2",
+        "SELECT d.id, d.direction, d.principal_cents, d.currency, d.occurred_on, d.due_on, d.note, d.archived_at, d.version, d.created_at, d.updated_at, c.id, c.display_name, b.paid_cents, b.remaining_cents, a.id, a.name, a.account_type, a.archived_at, d.origin_kind, d.transaction_id, d.transaction_auto_created FROM debts d JOIN counterparties c ON c.id = d.counterparty_id JOIN debt_balances b ON b.debt_id = d.id LEFT JOIN ledger_accounts a ON a.id = d.account_id AND a.user_id = d.user_id WHERE d.id = ?1 AND d.user_id = ?2",
         params![id, user.id.clone()],
     ).await?;
     let row = rows
@@ -2208,6 +2208,7 @@ async fn load_debt(
         account: ledger_account_brief(&row, 15, 16, 17, 18)?,
         origin_kind: DebtOriginKind::from_db(&origin_kind)?,
         transaction_id: row.get(20)?,
+        transaction_auto_created: row.get::<i64>(21)? != 0,
         repayments: Vec::new(),
         additions: Vec::new(),
     };
@@ -2232,7 +2233,7 @@ async fn load_additions(
     debt_id: &str,
 ) -> Result<Vec<DebtAdditionEventView>, ApiError> {
     let mut rows = conn.query(
-        "SELECT e.id, e.amount_cents, e.effective_on, e.note, e.created_at, a.id, a.name, a.account_type, a.archived_at, e.transaction_id FROM debt_addition_events e LEFT JOIN ledger_accounts a ON a.id = e.account_id AND a.user_id = e.user_id WHERE e.user_id = ?1 AND e.debt_id = ?2 ORDER BY e.effective_on DESC, e.created_at DESC",
+        "SELECT e.id, e.amount_cents, e.effective_on, e.note, e.created_at, a.id, a.name, a.account_type, a.archived_at, e.transaction_id, e.transaction_auto_created FROM debt_addition_events e LEFT JOIN ledger_accounts a ON a.id = e.account_id AND a.user_id = e.user_id WHERE e.user_id = ?1 AND e.debt_id = ?2 ORDER BY e.effective_on DESC, e.created_at DESC",
         params![user_id, debt_id],
     ).await?;
     let mut events = Vec::new();
@@ -2245,6 +2246,7 @@ async fn load_additions(
             created_at: row.get(4)?,
             account: ledger_account_brief(&row, 5, 6, 7, 8)?,
             transaction_id: row.get(9)?,
+            transaction_auto_created: row.get::<i64>(10)? != 0,
         });
     }
     Ok(events)
@@ -2256,7 +2258,7 @@ async fn load_events(
     debt_id: &str,
 ) -> Result<Vec<RepaymentEventView>, ApiError> {
     let mut rows = conn.query(
-        "SELECT e.id, e.kind, e.amount_cents, e.effective_on, e.note, e.reverses_event_id, e.created_at, EXISTS(SELECT 1 FROM repayment_events r WHERE r.reverses_event_id = e.id), a.id, a.name, a.account_type, a.archived_at, e.transaction_id FROM repayment_events e LEFT JOIN ledger_accounts a ON a.id = e.account_id AND a.user_id = e.user_id WHERE e.user_id = ?1 AND e.debt_id = ?2 ORDER BY e.effective_on DESC, e.created_at DESC",
+        "SELECT e.id, e.kind, e.amount_cents, e.effective_on, e.note, e.reverses_event_id, e.created_at, EXISTS(SELECT 1 FROM repayment_events r WHERE r.reverses_event_id = e.id), a.id, a.name, a.account_type, a.archived_at, e.transaction_id, e.transaction_auto_created FROM repayment_events e LEFT JOIN ledger_accounts a ON a.id = e.account_id AND a.user_id = e.user_id WHERE e.user_id = ?1 AND e.debt_id = ?2 ORDER BY e.effective_on DESC, e.created_at DESC",
         params![user_id, debt_id],
     ).await?;
     let mut events = Vec::new();
@@ -2273,6 +2275,7 @@ async fn load_events(
             reversed: reversed != 0,
             account: ledger_account_brief(&row, 8, 9, 10, 11)?,
             transaction_id: row.get(12)?,
+            transaction_auto_created: row.get::<i64>(13)? != 0,
         });
     }
     Ok(events)

@@ -1214,6 +1214,7 @@ export interface components {
             effectiveOn: string;
             id: string;
             note: string;
+            transactionAutoCreated: boolean;
             transactionId?: string | null;
         };
         /** @enum {string} */
@@ -1252,6 +1253,7 @@ export interface components {
             remainingCents: number;
             repayments: components["schemas"]["RepaymentEventView"][];
             status: components["schemas"]["DebtStatus"];
+            transactionAutoCreated: boolean;
             transactionId?: string | null;
             updatedAt: string;
             /** Format: int64 */
@@ -1540,6 +1542,7 @@ export interface components {
             note: string;
             reversed: boolean;
             reversesEventId?: string | null;
+            transactionAutoCreated: boolean;
             transactionId?: string | null;
         };
         ResetPasswordRequest: {

@@ -239,6 +239,7 @@ pub struct RepaymentEventView {
     pub created_at: String,
     pub account: Option<LedgerAccountBrief>,
     pub transaction_id: Option<String>,
+    pub transaction_auto_created: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -251,6 +252,7 @@ pub struct DebtAdditionEventView {
     pub created_at: String,
     pub account: Option<LedgerAccountBrief>,
     pub transaction_id: Option<String>,
+    pub transaction_auto_created: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -274,6 +276,7 @@ pub struct DebtView {
     pub account: Option<LedgerAccountBrief>,
     pub origin_kind: DebtOriginKind,
     pub transaction_id: Option<String>,
+    pub transaction_auto_created: bool,
     pub repayments: Vec<RepaymentEventView>,
     pub additions: Vec<DebtAdditionEventView>,
 }

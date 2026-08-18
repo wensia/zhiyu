@@ -82,6 +82,7 @@ const debt = {
   version: 2,
   createdAt: "2026-08-02T00:00:00Z",
   updatedAt: "2026-08-02T00:00:00Z",
+  transactionAutoCreated: false,
   additions: [],
   repayments: [],
 }
@@ -375,8 +376,8 @@ describe("DebtWorkspace", () => {
     const legacyDebt = {
       ...debt,
       account: null,
-      additions: [{ id: "legacy-addition", amountCents: 10_000, effectiveOn: "2026-08-04", note: "历史追加", account: null, createdAt: "2026-08-04T09:00:00Z" }],
-      repayments: [{ id: "legacy-payment", amountCents: 20_000, effectiveOn: "2026-08-03", note: "历史还款", account: null, kind: "payment", reversed: false, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z" }],
+      additions: [{ id: "legacy-addition", amountCents: 10_000, effectiveOn: "2026-08-04", note: "历史追加", account: null, createdAt: "2026-08-04T09:00:00Z", transactionAutoCreated: false }],
+      repayments: [{ id: "legacy-payment", amountCents: 20_000, effectiveOn: "2026-08-03", note: "历史还款", account: null, kind: "payment", reversed: false, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z", transactionAutoCreated: false }],
     }
     vi.mocked(api.debt).mockResolvedValue(legacyDebt)
     renderWorkspace(["/app/debts/debt-1"])
@@ -397,8 +398,8 @@ describe("DebtWorkspace", () => {
       account: null,
       note: "",
       additions: [
-        { id: "addition-later", amountCents: 1_000_000, effectiveOn: "2026-09-07", note: "", account: null, createdAt: "2026-08-02T12:43:18Z" },
-        { id: "addition-earlier", amountCents: 1_000_000, effectiveOn: "2023-09-11", note: "", account: null, createdAt: "2026-08-02T12:43:34Z" },
+        { id: "addition-later", amountCents: 1_000_000, effectiveOn: "2026-09-07", note: "", account: null, createdAt: "2026-08-02T12:43:18Z", transactionAutoCreated: false },
+        { id: "addition-earlier", amountCents: 1_000_000, effectiveOn: "2023-09-11", note: "", account: null, createdAt: "2026-08-02T12:43:34Z", transactionAutoCreated: false },
       ],
       repayments: [],
     })
@@ -469,8 +470,8 @@ describe("DebtWorkspace", () => {
       principalCents: 125_000,
       remainingCents: 105_000,
       version: 3,
-      additions: [{ id: "addition-1", amountCents: 25_000, effectiveOn: "2026-08-04", note: "又借了一笔", account: accountBrief, createdAt: "2026-08-04T09:00:00Z" }],
-      repayments: [{ id: "payment-1", amountCents: 20_000, effectiveOn: "2026-08-03", note: "先还一部分", account: accountBrief, kind: "payment", reversed: false, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z" }],
+      additions: [{ id: "addition-1", amountCents: 25_000, effectiveOn: "2026-08-04", note: "又借了一笔", account: accountBrief, createdAt: "2026-08-04T09:00:00Z", transactionAutoCreated: false }],
+      repayments: [{ id: "payment-1", amountCents: 20_000, effectiveOn: "2026-08-03", note: "先还一部分", account: accountBrief, kind: "payment", reversed: false, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z", transactionAutoCreated: false }],
     }
     vi.mocked(api.debt).mockResolvedValueOnce(debt).mockResolvedValue(updatedDebt)
     vi.mocked(api.createDebtAddition).mockResolvedValue(updatedDebt)
@@ -508,7 +509,7 @@ describe("DebtWorkspace", () => {
     const user = userEvent.setup()
     const initialDebt = {
       ...debt,
-      additions: [{ id: "addition-1", amountCents: 25_000, effectiveOn: "2026-08-04", note: "旧备注", account: null, createdAt: "2026-08-04T09:00:00Z" }],
+      additions: [{ id: "addition-1", amountCents: 25_000, effectiveOn: "2026-08-04", note: "旧备注", account: null, createdAt: "2026-08-04T09:00:00Z", transactionId: "auto-addition-1", transactionAutoCreated: true }],
     }
     const updatedDebt = {
       ...initialDebt,
@@ -543,7 +544,7 @@ describe("DebtWorkspace", () => {
 
   it("edits an active repayment record but not reversed history", async () => {
     const user = userEvent.setup()
-    const payment = { id: "payment-1", amountCents: 20_000, effectiveOn: "2026-08-03", note: "旧还款", account: accountBrief, kind: "payment", reversed: false, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z" }
+    const payment = { id: "payment-1", amountCents: 20_000, effectiveOn: "2026-08-03", note: "旧还款", account: accountBrief, kind: "payment", reversed: false, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z", transactionId: "auto-payment-1", transactionAutoCreated: true }
     const initialDebt = { ...debt, repayments: [payment] }
     const updatedDebt = { ...initialDebt, paidCents: 25_000, remainingCents: 75_000, version: 3, repayments: [{ ...payment, amountCents: 25_000, note: "修正还款" }] }
     vi.mocked(api.debt).mockResolvedValue(initialDebt)
@@ -571,9 +572,9 @@ describe("DebtWorkspace", () => {
   })
 
   it("does not expose edits for archived, reversed, or reversal records", async () => {
-    const reversedPayment = { id: "payment-1", amountCents: 20_000, effectiveOn: "2026-08-03", note: "", account: accountBrief, kind: "payment", reversed: true, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z" }
+    const reversedPayment = { id: "payment-1", amountCents: 20_000, effectiveOn: "2026-08-03", note: "", account: accountBrief, kind: "payment", reversed: true, reversesEventId: null, createdAt: "2026-08-03T09:00:00Z", transactionAutoCreated: false }
     const reversal = { ...reversedPayment, id: "reversal-1", kind: "reversal", reversed: false, reversesEventId: "payment-1" }
-    vi.mocked(api.debt).mockResolvedValue({ ...debt, archived: true, status: "archived", additions: [{ id: "addition-1", amountCents: 1_000, effectiveOn: "2026-08-04", note: "", account: accountBrief, createdAt: "2026-08-04T09:00:00Z" }], repayments: [reversedPayment, reversal] })
+    vi.mocked(api.debt).mockResolvedValue({ ...debt, archived: true, status: "archived", additions: [{ id: "addition-1", amountCents: 1_000, effectiveOn: "2026-08-04", note: "", account: accountBrief, createdAt: "2026-08-04T09:00:00Z", transactionAutoCreated: false }], repayments: [reversedPayment, reversal] })
     renderWorkspace(["/app/debts/debt-1"])
 
     await screen.findByText("追加借出 ¥10.00")
@@ -600,7 +601,7 @@ describe("DebtWorkspace", () => {
         <AppToastProvider>
           <DebtFormModal
             counterparties={[{ id: "person-1", displayName: "阿青", note: "", archived: false, version: 1, lendOutRemainingCents: 0, borrowInRemainingCents: 0, netCents: 0, activeDebtCount: 1, overdueCount: 0 }]}
-            debt={{ ...debt, paidCents: 0, additions: [{ id: "addition-1", amountCents: 10_000, effectiveOn: "2026-08-03", note: "", account: accountBrief, createdAt: "2026-08-03T00:00:00Z" }] }}
+            debt={{ ...debt, paidCents: 0, additions: [{ id: "addition-1", amountCents: 10_000, effectiveOn: "2026-08-03", note: "", account: accountBrief, createdAt: "2026-08-03T00:00:00Z", transactionAutoCreated: false }] }}
             onOpenChange={() => undefined}
             onSaved={onSaved}
             open

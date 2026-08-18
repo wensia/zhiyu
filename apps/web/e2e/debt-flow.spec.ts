@@ -237,8 +237,8 @@ test("registration, ledger events, reversal and account isolation", async ({ pag
   await detail.getByRole("button", { name: "更多债务操作" }).click()
   await page.getByRole("menuitem", { name: "归档债务" }).click()
   await page.getByRole("button", { name: "确认归档" }).click()
-  await expect(detail.getByText("已归档")).toBeVisible()
-  await backToDebtList.click()
+  // 归档后详情页对这笔债务已经无事可做，留在这里只会给用户一个空壳，所以直接回列表
+  // （单测 "归档后离开详情页回到列表" 是同一条约定）。旧断言等的是「详情页显示已归档」。
   await expect(page).toHaveURL(/\/app\/debts$/)
   await expect(backToDebtList).toHaveCount(0)
   await page.getByLabel("退出登录").click()
