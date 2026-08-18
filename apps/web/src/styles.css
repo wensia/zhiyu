@@ -914,7 +914,11 @@ td[data-sticky-cell="right"] { z-index: 20; }
 .statistics-dashboard-grid { min-height: 0; margin-inline: -16px; }
 .statistics-dashboard-grid .react-grid-item { min-width: 0; }
 .statistics-dashboard-grid .react-grid-placeholder { border-radius: var(--radius-card); background: var(--muted); opacity: .7; }
-.statistics-dashboard-grid .react-grid-item > .react-resizable-handle::after { right: 5px; bottom: 5px; width: 7px; height: 7px; border-right: 1px solid var(--border-visible); border-bottom: 1px solid var(--border-visible); }
+.statistics-dashboard-grid .react-grid-item > .react-resizable-handle-se::after { right: 5px; bottom: 5px; width: 7px; height: 7px; border-right: 1px solid var(--border-visible); border-bottom: 1px solid var(--border-visible); }
+.statistics-dashboard-grid .react-grid-item > .react-resizable-handle-e { transform: none; }
+.statistics-dashboard-grid .react-grid-item > .react-resizable-handle-e::after { top: 4px; right: 5px; bottom: auto; width: 0; height: 12px; border-right: 1px solid var(--border-visible); border-bottom: 0; }
+.statistics-dashboard-grid .react-grid-item > .react-resizable-handle-s { transform: none; }
+.statistics-dashboard-grid .react-grid-item > .react-resizable-handle-s::after { right: auto; bottom: 5px; left: 4px; width: 12px; height: 0; border-right: 0; border-bottom: 1px solid var(--border-visible); }
 
 .statistics-widget-card { width: 100%; height: 100%; min-width: 0; display: flex; flex-direction: column; overflow: hidden; padding: var(--space-4); border-radius: var(--radius-card); background: var(--card); box-shadow: var(--shadow-card); }
 .statistics-widget-header { min-width: 0; min-height: var(--control-height-sm); display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); flex: 0 0 auto; }

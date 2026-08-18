@@ -107,3 +107,51 @@ test("删掉上面的组件，下面的不会自动上浮", async ({ page }, tes
   // vertical compact 会把它拽到顶上；保持位置语义下它必须原地不动
   expect(Math.abs(after.y - before.y)).toBeLessThan(8)
 })
+
+/** 把手也要用真实指针序列拖，且拖的是把手本身而不是卡片头。 */
+async function dragHandle(page: Page, title: string, direction: "e" | "s", dx: number, dy: number) {
+  // page.mouse 用的是视口坐标：组件被拖到下方后可能整个落在视口外，鼠标够不着把手
+  await card(page, title).scrollIntoViewIfNeeded()
+  const handle = card(page, title).locator(`.react-resizable-handle-${direction}`)
+  const box = (await handle.boundingBox())!
+  const fromX = box.x + box.width / 2
+  const fromY = box.y + box.height / 2
+  await page.mouse.move(fromX, fromY)
+  await page.mouse.down()
+  await page.mouse.move(fromX + dx, fromY + dy, { steps: 12 })
+  await page.mouse.up()
+  await page.waitForTimeout(300)
+}
+
+test("宽度和高度能分别拉，刷新后尺寸保持", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes("mobile"), "布局只在桌面断点可编辑")
+  await registerVerifyLogin(page)
+  await openDashboard(page)
+  await page.getByRole("button", { name: "编辑" }).click()
+
+  // 默认布局四个组件铺满 12 列，谁的右边都紧挨着邻居；preventCollision=true 下一拉就撞、
+  // 被钳到最后一个不碰撞的尺寸（这是对的）。所以先把它挪到下方的空地，再调整大小 ——
+  // 这也正是真实用法：先摆位置，再定大小。
+  const target = card(page, "账户余额")
+  await dragBy(page, "账户余额", 0, 420)
+  const start = (await target.boundingBox())!
+
+  // 右边缘：只改宽，不改高
+  await dragHandle(page, "账户余额", "e", 200, 0)
+  const wider = (await target.boundingBox())!
+  expect(wider.width).toBeGreaterThan(start.width + 80)
+  expect(Math.abs(wider.height - start.height)).toBeLessThan(8)
+
+  // 下边缘：只改高，不改宽
+  await dragHandle(page, "账户余额", "s", 0, 160)
+  const taller = (await target.boundingBox())!
+  expect(taller.height).toBeGreaterThan(wider.height + 60)
+  expect(Math.abs(taller.width - wider.width)).toBeLessThan(8)
+
+  await page.waitForTimeout(900) // 越过防抖
+  await page.reload()
+  await expect(page.getByRole("heading", { name: "收支趋势" })).toBeVisible()
+  const reloaded = (await card(page, "账户余额").boundingBox())!
+  expect(reloaded.width).toBeGreaterThan(start.width + 60)
+  expect(reloaded.height).toBeGreaterThan(start.height + 60)
+})

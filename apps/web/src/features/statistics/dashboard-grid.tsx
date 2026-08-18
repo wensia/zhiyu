@@ -129,6 +129,7 @@ export function DashboardGrid({
           onLayoutChange={desktop ? applyLayout : undefined}
           allowOverlap={false}
           preventCollision={true}
+          resizeHandles={["se", "e", "s"]}
           rowHeight={ROW_HEIGHT}
         >
           {widgets.map((widget) => {
