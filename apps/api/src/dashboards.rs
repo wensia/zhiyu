@@ -21,6 +21,10 @@ use crate::{
     plugins::{self, BUILT_IN_PLUGINS, WidgetDefinition},
 };
 
+// This asymmetry is intentional: database CHECKs remain fallback invariants because changing one
+// requires SQLite's 12-step table rebuild, while the row cap is an application-layer policy.
+const MAX_ROWS: i64 = 200;
+
 pub const CORE_WIDGETS: &[WidgetDefinition] = &[
     WidgetDefinition {
         id: "income-expense-trend",
@@ -163,6 +167,9 @@ fn validate_widget(input: &DashboardWidgetInput) -> Result<(), ApiError> {
         || input.x + input.w > 12
     {
         return Err(ApiError::validation("组件超出 12 列网格范围"));
+    }
+    if input.y + input.h > MAX_ROWS {
+        return Err(ApiError::validation("组件超出 200 行网格范围"));
     }
     if let Some(id) = input.id.as_deref()
         && (id.trim().is_empty() || id.len() > 128)
@@ -734,9 +741,12 @@ pub async fn statistics_aggregate(
 
 #[cfg(test)]
 mod tests {
+    use axum::http::StatusCode;
     use serde_json::json;
 
-    use super::{AggregateQuery, DashboardWidgetInput, parse_aggregate_query, validate_widget};
+    use super::{
+        AggregateQuery, DashboardWidgetInput, MAX_ROWS, parse_aggregate_query, validate_widget,
+    };
 
     #[test]
     fn aggregate_range_is_capped_at_366_days() {
@@ -775,5 +785,23 @@ mod tests {
             config: json!({}),
         };
         assert!(validate_widget(&overflow).is_err());
+    }
+
+    #[test]
+    fn widget_validation_rejects_row_overflow() {
+        let overflow = DashboardWidgetInput {
+            id: None,
+            widget_type: "core:category-share".into(),
+            plugin_id: None,
+            x: 0,
+            y: MAX_ROWS - 2,
+            w: 4,
+            h: 3,
+            config: json!({}),
+        };
+
+        let error = validate_widget(&overflow).expect_err("widget should exceed the row limit");
+        assert_eq!(error.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(error.message, "组件超出 200 行网格范围");
     }
 }
