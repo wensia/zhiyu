@@ -8,7 +8,7 @@
     "desktop:dev": "pnpm tauri dev",
     "desktop:build": "pnpm --dir apps/desktop build",
     "build": "cargo build --workspace --locked && pnpm --dir apps/web build",
-    "check": "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --dir apps/web check",
+    "check": "pnpm verify:design && cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo test --workspace && pnpm --dir apps/web check && pnpm --dir apps/web verify:contract",
     "test:e2e": "pnpm --dir apps/web test:e2e",
     "verify:design": "node scripts/verify-design.mjs"
   },

@@ -23,6 +23,7 @@ const WORKBENCH_ROUTES: Array<[string, string]> = [
   ["流水", "/app/transactions"],
   ["统计", "/app/statistics"],
   ["账单导入", "/app/transactions/imports"],
+  ["插件设置", "/app/settings/plugins"],
 ]
 
 async function verificationLink(email: string) {

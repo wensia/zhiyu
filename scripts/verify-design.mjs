@@ -9,7 +9,16 @@ const sourceRoot = new URL("../apps/web/src/", import.meta.url)
 const failures = []
 
 const contract = JSON.parse(await readFile(join(kilnRoot, "contract/tokens.json"), "utf8"))
-const externalRuntimeTokens = ["--radix-select-trigger-width", "--radix-select-content-available-height"]
+// 运行时注入的变量：值由组件库或本项目的 JS 在渲染时写进 style，CSS 只负责读。
+// 它们不是"自造 token"——设计系统管不到、也不该管一个由 ResizeObserver 算出来的行高。
+const externalRuntimeTokens = [
+  "--radix-select-trigger-width",
+  "--radix-select-content-available-height",
+  "--radix-toast-swipe-move-x",
+  "--brand-mark-image", // brand-mark.tsx 注入品牌图资源
+  "--tx-entry-gap", // transaction-workspace.tsx 按格子实测高度算出的日历条目布局
+  "--tx-entry-height",
+]
 const allowed = new Set([...contract.tokens, ...Object.keys(contract.knownDeviations || {}), ...externalRuntimeTokens])
 const tokenFiles = (await readdir(join(kilnRoot, "tokens")))
   .filter((name) => name.endsWith(".css") && !["index.css", "fonts.css"].includes(name))

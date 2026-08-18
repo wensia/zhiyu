@@ -12,7 +12,8 @@
     "typecheck": "pnpm api:check && tsc -b",
     "test": "vitest run",
     "test:e2e": "playwright test",
-    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build"
+    "check": "pnpm lint && pnpm typecheck && pnpm test && pnpm build",
+    "verify:contract": "playwright test e2e/design-contract.spec.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.2.1",
