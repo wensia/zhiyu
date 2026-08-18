@@ -11,7 +11,7 @@ import { AddWidgetSheet, DashboardNameDialog, DashboardTabs, EmptyDashboardState
 import { DashboardGrid } from "./dashboard-grid"
 import { StatisticsPeriodProvider } from "./period"
 import { MetricStrip } from "./shared"
-import { monthKeyOf } from "./utils"
+import { findFreeSlot, monthKeyOf } from "./utils"
 
 function useViewportWidth() {
   const [width, setWidth] = useState(() => typeof window === "undefined" ? 1280 : window.innerWidth)
@@ -67,8 +67,14 @@ export function StatisticsDashboardWorkspace() {
   const [configuringWidget, setConfiguringWidget] = useState<DashboardWidget>()
   const initialized = useRef(false)
   const lastSaved = useRef(new Map<string, DashboardWidget[]>())
+  const saveSignatures = useRef(new Map<string, string>())
   const saveTimers = useRef(new Map<string, number>())
   const saveGenerations = useRef(new Map<string, number>())
+  const pendingSaves = useRef(new Map<string, {
+    widgets: DashboardWidget[]
+    generation: number
+    idempotencyKey: string
+  }>())
 
   const dashboardsQuery = useQuery({ queryKey: ["dashboards"], queryFn: api.dashboards })
   const widgetTypesQuery = useQuery({ queryKey: ["dashboard-widget-types"], queryFn: api.dashboardWidgetTypes })
@@ -124,18 +130,35 @@ export function StatisticsDashboardWorkspace() {
   }, [toast, updateLocalWidgets])
 
   const queueWidgetSave = useCallback((dashboardId: string, widgets: DashboardWidget[]) => {
+    const signature = JSON.stringify(widgetInputs(widgets))
+    if (saveSignatures.current.get(dashboardId) === signature) return
+    saveSignatures.current.set(dashboardId, signature)
     updateLocalWidgets(dashboardId, widgets)
     const previous = saveTimers.current.get(dashboardId)
     if (previous !== undefined) window.clearTimeout(previous)
     const generation = (saveGenerations.current.get(dashboardId) ?? 0) + 1
     saveGenerations.current.set(dashboardId, generation)
     const idempotencyKey = crypto.randomUUID()
+    pendingSaves.current.set(dashboardId, { widgets, generation, idempotencyKey })
     const timer = window.setTimeout(() => {
       saveTimers.current.delete(dashboardId)
+      pendingSaves.current.delete(dashboardId)
       persistWidgets(dashboardId, widgets, generation, idempotencyKey)
     }, 500)
     saveTimers.current.set(dashboardId, timer)
   }, [persistWidgets, updateLocalWidgets])
+
+  const flushPendingSaves = useCallback(() => {
+    for (const timer of saveTimers.current.values()) window.clearTimeout(timer)
+    saveTimers.current.clear()
+    const pending = [...pendingSaves.current.entries()]
+    pendingSaves.current.clear()
+    for (const [dashboardId, save] of pending) {
+      persistWidgets(dashboardId, save.widgets, save.generation, save.idempotencyKey)
+    }
+  }, [persistWidgets])
+
+  useEffect(() => () => flushPendingSaves(), [flushPendingSaves])
 
   const createMutation = useIdempotentMutation({
     mutationFn: (name: string, write) => api.createDashboard({ name }, write),
@@ -178,13 +201,13 @@ export function StatisticsDashboardWorkspace() {
   const addWidget = (definition: WidgetTypes["core"][number], pluginId?: string) => {
     if (!activeDashboard) return
     const widgetType = pluginId ? `plugin:${pluginId}:${definition.id}` : `core:${definition.id}`
-    const y = activeDashboard.widgets.reduce((bottom, widget) => Math.max(bottom, widget.y + widget.h), 0)
+    const position = findFreeSlot(activeDashboard.widgets, definition.defaultW, definition.defaultH)
     const next: DashboardWidget = {
       id: crypto.randomUUID(),
       widgetType,
       pluginId: pluginId ?? null,
-      x: 0,
-      y,
+      x: position.x,
+      y: position.y,
       w: definition.defaultW,
       h: definition.defaultH,
       config: defaultConfig(widgetType),

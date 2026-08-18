@@ -16,6 +16,9 @@ const MeasuredGridLayout = ReactGridLayout.WidthProvider(ReactGridLayout)
 type Layout = ReactGridLayout.Layout
 type WidgetDefinition = WidgetTypes["core"][number]
 
+const ROW_HEIGHT = 72
+const GRID_MARGIN: [number, number] = [16, 16]
+
 const CORE_TITLES: Record<string, string> = {
   "core:income-expense-trend": "收支趋势",
   "core:category-share": "分类占比",
@@ -83,22 +86,27 @@ export function DashboardGrid({
       y: widget.y,
       w: widget.w,
       h: widget.h,
-      minW: definition?.minW,
-      minH: definition?.minH,
+      minW: definition?.minW ?? 1,
+      minH: definition?.minH ?? 1,
     }
   })
   const applyLayout = (next: Layout[]) => {
     const byId = new Map(next.map((item) => [item.i, item]))
-    onLayoutChange(widgets.map((widget) => {
+    const nextWidgets = widgets.map((widget) => {
       const item = byId.get(widget.id)
       return item ? { ...widget, x: item.x, y: item.y, w: item.w, h: item.h } : widget
-    }))
+    })
+    if (nextWidgets.every((widget, index) => {
+      const current = widgets[index]
+      return widget.x === current.x && widget.y === current.y && widget.w === current.w && widget.h === current.h
+    })) return
+    onLayoutChange(nextWidgets)
   }
   const visibleLayout = desktop ? layout : viewportWidth >= 768 ? sixColumnLayout(layout) : singleColumnLayout(layout)
   const columns = desktop ? 12 : viewportWidth >= 768 ? 6 : 1
 
   return (
-    <div className="statistics-grid-region">
+    <div className={`statistics-grid-region${editing ? " statistics-grid-region-editing" : ""}`}>
       {!desktop ? <p className="statistics-breakpoint-notice" role="status">请在桌面宽度下编辑布局</p> : null}
       {!widgets.length ? (
         <div className="statistics-empty-grid">
@@ -109,18 +117,19 @@ export function DashboardGrid({
         <MeasuredGridLayout
           className="statistics-dashboard-grid"
           cols={columns}
-          compactType="vertical"
+          compactType={null}
           draggableCancel="button, a, [role='menu']"
           draggableHandle=".statistics-widget-header"
           isDraggable={editing && desktop}
           isResizable={editing && desktop}
           layout={visibleLayout}
-          margin={[16, 16]}
+          margin={GRID_MARGIN}
+          maxRows={200}
           measureBeforeMount={false}
-          onDragStop={(next) => applyLayout(next)}
-          onResizeStop={(next) => applyLayout(next)}
-          preventCollision={false}
-          rowHeight={72}
+          onLayoutChange={desktop ? applyLayout : undefined}
+          allowOverlap={false}
+          preventCollision={true}
+          rowHeight={ROW_HEIGHT}
         >
           {widgets.map((widget) => {
             const definition = findDefinition(widget, widgetTypes)

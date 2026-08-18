@@ -909,6 +909,7 @@ td[data-sticky-cell="right"] { z-index: 20; }
 .statistics-month-controls strong { font-size: var(--text-body); }
 
 .statistics-grid-region { min-height: 0; flex: 1; }
+.statistics-grid-region-editing { padding-bottom: calc((72px + 16px) * 3); }
 .statistics-breakpoint-notice { margin-bottom: var(--space-3); color: var(--muted-foreground); font-size: var(--text-meta); text-align: right; }
 .statistics-dashboard-grid { min-height: 0; margin-inline: -16px; }
 .statistics-dashboard-grid .react-grid-item { min-width: 0; }

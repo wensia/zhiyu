@@ -24,3 +24,25 @@ export function categoryKind(config: unknown): "expense" | "income" {
 export function accountsUnarchivedOnly(config: unknown) {
   return configRecord(config).unarchivedOnly !== false
 }
+
+export function findFreeSlot(
+  occupied: Array<{ x: number; y: number; w: number; h: number }>,
+  w: number,
+  h: number,
+  cols = 12,
+): { x: number; y: number } {
+  const width = Math.min(cols, Math.max(1, w))
+  const bottom = occupied.reduce((value, item) => Math.max(value, item.y + item.h), 0)
+  for (let y = 0; y <= bottom; y += 1) {
+    for (let x = 0; x <= cols - width; x += 1) {
+      const overlaps = occupied.some((item) => (
+        x < item.x + item.w
+        && x + width > item.x
+        && y < item.y + item.h
+        && y + h > item.y
+      ))
+      if (!overlaps) return { x, y }
+    }
+  }
+  return { x: 0, y: bottom }
+}

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
-import { render, screen, waitFor, within } from "@testing-library/react"
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { useState } from "react"
 import { MemoryRouter } from "react-router-dom"
@@ -107,6 +107,41 @@ describe("StatisticsDashboardWorkspace", () => {
     await user.click(screen.getByRole("button", { name: "操作组件 分类占比" }))
     await user.click(screen.getByRole("menuitem", { name: "删除" }))
     await waitFor(() => expect(api.replaceDashboardWidgets).toHaveBeenCalledTimes(2), { timeout: 1500 })
+  })
+
+  it("does not save an unchanged layout when the dashboard mounts", async () => {
+    renderWorkspace()
+    expect(await screen.findByText("收支趋势")).toBeInTheDocument()
+    await new Promise((resolve) => window.setTimeout(resolve, 600))
+    expect(api.replaceDashboardWidgets).not.toHaveBeenCalled()
+  })
+
+  it("does not save the six-column projection when mounted at 900px", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 900 })
+    renderWorkspace()
+    expect(await screen.findByText("请在桌面宽度下编辑布局")).toBeInTheDocument()
+    await new Promise((resolve) => window.setTimeout(resolve, 600))
+    expect(api.replaceDashboardWidgets).not.toHaveBeenCalled()
+  })
+
+  it("flushes a pending widget save immediately on unmount", async () => {
+    const user = userEvent.setup()
+    const view = renderWorkspace()
+    expect(await screen.findByText("收支趋势")).toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "编辑" }))
+    await user.click(screen.getByRole("button", { name: "添加组件" }))
+    const sheet = await screen.findByRole("dialog", { name: "添加组件" })
+    vi.useFakeTimers()
+    try {
+      fireEvent.click(within(sheet).getByRole("button", { name: /分类占比/ }))
+      expect(api.replaceDashboardWidgets).not.toHaveBeenCalled()
+
+      view.unmount()
+
+      expect(api.replaceDashboardWidgets).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it("keeps a closed plugin widget as a placeholder", async () => {
