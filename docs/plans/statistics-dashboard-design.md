@@ -1,0 +1,75 @@
+# 统计面板（网格仪表盘）设计说明 · kiln workbench 层（2026-08-18）
+
+- 供批次 E2 实现。产品定位见 `plugin-architecture-2026-08-17.md` §四；后端接口见批次 E1（`/api/v1/dashboards*`、`/api/v1/statistics/aggregate`、`/api/v1/dashboards/widget-types`）。
+- 依据 kiln：workbench 层、Overview 蓝图、Tabs（button 变体）、Summary strip、Sheet、Empty/Loading、Button 变体决策表、Elevation/Radius/Type 令牌。**只写令牌名，不写数值。**
+
+## 一、页面定位与密度
+- 路由 `/app/statistics`（现有），页面类型 = **Overview**，密度 **Spacious**（组件内为 Standard）。
+- 用户的活是「看账」：一眼看到本月收支/结余、趋势、分类占比、账户余额；偶尔拼一块自己的面板。**日常态是看，不是编**——编辑能力必须藏在一个开关后面。
+- 标题权威沿用现有产品约定（顶栏 `h1` = 路由名「统计」，通过 `TopbarSlotContext` 挂顶栏内容），页身不再出现「统计」二字。
+
+## 二、层级（三层）
+| 层 | 内容 |
+|---|---|
+| 主 | 网格里的组件（数字、图） |
+| 次 | 顶栏右侧：面板页签、月份选择、「编辑」开关；编辑态下的「添加组件」 |
+| 三 | 组件卡右上角的溢出菜单（编辑态）、占位卡说明文字、空状态说明 |
+
+## 三、结构
+
+```
+顶栏（现有 shell 顶栏，h1「统计」由 shell 渲染）
+  右侧插槽：[面板页签 button-tabs] [月份 ‹ 2026-08 ›] [编辑 开关(outline)]
+                                              编辑态追加：[+ 添加组件 (ink default)] [完成 (primary? 否——见 §五)]
+页身：12 列网格（`react-grid-layout`），行高 = 一个 `--space-8` 的倍数（建议 row height 72px、`margin=[16,16]`），
+     容器左右内边距沿用 shell 内容区，不再套外层卡片。
+```
+
+- **面板页签**：kiln Tabs `variant="button"`（raised segment in quiet track），只允许这一组 button-tab；页签末尾在编辑态出现「+」（`ghost`，有可见弱边）新建页。重命名/删除页放在页签右键或页签末尾的溢出菜单（编辑态）。至少保留一页（删除最后一页时按钮禁用并 title 说明）。
+- **月份选择**：复用现有统计页的月份控件（`‹ 2026-08 ›`）；它是页面级上下文，所有依赖月份的核心组件共用；组件自身不再各带月份选择。
+- **编辑开关**：`outline` 按钮「编辑」；进入编辑态后同一位置变成「完成」（仍是 outline/ink，不是 clay——按钮决策表第 4 行：这是普通命令，不是本页唯一关键动作；本页没有关键动作，因此**整页零 clay 填充**，clay 只出现在页签当前态与图表主系列）。
+- **网格**：`react-grid-layout`（MIT）12 列，`compactType="vertical"`，`preventCollision=false`，`isDraggable/isResizable` 仅编辑态为真；非编辑态组件不可拖不可拉、无把手。拖拽把手 = 组件头部整条（编辑态 cursor 变化），缩放把手 = 右下角，样式用 `--border-visible` 的细角标，不画粗把手。断点：≥1024 用 12 列，768–1023 用 6 列（同一布局按比例映射，只读，不可编辑），<768 单列纵向堆叠（只读）。**布局只在桌面断点可编辑**，其它断点显示提示「请在桌面宽度下编辑布局」。
+
+## 四、组件卡（widget card）
+- 表面：borderless 白卡 `--card` + `--shadow-card`，圆角 `--radius-card`；**不加边框**；hover 不抬升（不是 resource card）。
+- 内边距 `--space-4`；头部：标题 `--text-section-title`（600）左对齐，右侧编辑态出现溢出菜单触发（`ghost`，安静型——属于 kiln 允许的「表操作菜单触发」一类），菜单项：配置（若组件有配置面板）、删除；菜单内图标要么全有要么全无。
+- 主体：图或数字。数字用 `--text-data` + tabular figures（`--font-feature-tabular`），标签 `--text-meta`；图表系列色只用 `--chart-1..5`（收入 `--chart-2` teal，支出 `--chart-1` clay，结余线 `--chart-3` peacock，与现有 TrendChart 一致）。
+- 组件不画自己的边框、渐变、图标装饰；标题就是全部说明。金额单位「元」由现有 `yuan()` 格式化，负数用 `--destructive` 文字色，不用底色。
+- 加载：组件内 skeleton 行（`--muted` 底），高度不变；错误：`InlineNotice type="error"` + 「重试」；空数据：一句话「本月暂无数据」+ 一个次要动作（「记一笔」跳流水页），无插画。
+- **占位卡**（插件已关闭 / 组件类型未知 / 插件被移除）：同一张白卡，标题灰（`--muted-foreground`），主体一行说明「〈插件名〉已关闭」+ 「去开启」链接（跳 `/app/settings/plugins`）；布局位置保留；编辑态可删除。
+
+## 五、编辑态
+- 进入：点「编辑」。整页无变色、无遮罩；变化只有三处：组件出现拖拽/缩放把手（细角标 + 头部 cursor: grab）、头部溢出菜单出现、顶栏出现「+ 添加组件」（ink `default`）与「完成」。
+- 保存策略：**每次拖放/缩放/增删结束即 `PUT /dashboards/{id}/widgets` 全量提交**（防抖 500ms），右下 toast 只在失败时出现（成功不打扰）。「完成」只是退出编辑态，不是保存按钮。
+- 添加组件：Sheet（右侧）「添加组件」，分组：核心 / 各插件（已关闭的插件组显示但整组禁用并注明「已关闭」）。每项一行：名称 + 一句话说明 + 默认尺寸（如 8×4）；点击即加到当前页末尾（自动下移到第一块能放下的位置），Sheet 不关闭，可连续添加。已在页面上的组件仍可再添加（同类型多份，例如两个不同配置的分类占比）。
+- 组件配置面板（有 `config` 的组件）：Dialog（Focused 密度），只放该组件的字段（如分类占比的「收入/支出」切换、账户余额的「只看未归档」）；确认为 ink `default`。
+- 新建面板：Dialog 一个字段「名称」；默认名「面板 N」。
+
+## 六、核心组件（第一版 4 个）与插件组件
+| 组件 | 数据 | 默认尺寸 | 内容 |
+|---|---|---|---|
+| `core:income-expense-trend` 每日趋势 | `aggregate?groupBy=day&from=月初&to=次月初` | 8×4 | 复用现有 `TrendChart`（柱：收入/支出，线：累计结余） |
+| `core:category-share` 分类占比 | `aggregate?groupBy=category&kind=expense`（config 可切 income） | 4×4 | 复用现有 `CategoryShare`（横条排行，前 8 + 其它） |
+| `core:account-balances` 账户余额 | 现有 `accounts` 接口 | 4×3 | 每行：账户名 + 余额（tabular），未归档账户，超过 6 行内部滚动 |
+| `core:month-compare` 近 6 个月 | `aggregate?groupBy=month&from=6 个月前&to=次月初` | 8×3 | 分组柱（收入/支出）+ 每月结余数字行 |
+| `plugin:debts:overview` 谁欠我多少 | 现有 `GET /api/v1/dashboard/summary` | 4×3 | 借出未收 / 借入未还 两个数字 + 最近到期 3 条 |
+
+现有 `MetricStrip`（本月收入/支出/结余/笔数）**不作为网格组件**，而是网格上方的一条 Summary strip：整宽、`px-4` 内边距、无图标、四个数字用 `--text-data`；它随月份变化，是页面级上下文，不可删除、不可拖动。这样 KPI 与可拼组件职责分明（kiln：Metric strip 与组件卡不要互相假扮）。
+
+## 七、首次使用与迁移
+- 首次进入且用户无面板：显示空状态卡（Spacious）：「还没有统计面板」+ ink 按钮「使用默认布局」（调 `POST /dashboards/default`）+ 次要「从空白开始」；不自动创建。
+- 默认布局 = E1 定义（trend 8×4 / category 4×4 / balances 4×3 / compare 8×3），视觉上就是现在统计页的升级版，老用户不觉得陌生。
+
+## 八、状态清单（QA）
+- 只读态：无把手、无菜单、无「添加组件」；页签切换、月份切换正常；组件加载/错误/空三态高度稳定（组件高度由网格决定，不由内容决定）。
+- 编辑态：拖放、缩放、增删、重命名、新建页、删除页（最后一页禁用）；每次变更后网络请求成功且刷新后布局一致；失败 toast 可重试。
+- 插件关闭：占位卡显示、布局保留、重开后恢复渲染；「添加组件」中该插件组禁用。
+- 断点：1280 / 1024 / 768 / 390 四档；<1024 只读；组件内数字不溢出（tabular，超长省略）；表格类组件内部滚动。
+- 一屏内 clay 填充数量 = 0（页签当前态与图表色不计）；无边框卡；阴影只用 `--shadow-card`；字号只出现 `--text-section-title / --text-body / --text-meta / --text-data`。
+- 键盘：焦点策略沿用产品现状（keyboard）；页签、按钮、菜单可达；拖拽不可达时提供菜单项「上移/下移」作为无鼠标替代（第一版可选）。
+
+## 九、明确不做
+- 无限画布、缩放平移、组件重叠、自由坐标。
+- 组件间联动/筛选联动。
+- 组件级月份选择、组件级刷新按钮（kiln：同一视口不出现两个同义刷新）。
+- 分享/导出面板。
