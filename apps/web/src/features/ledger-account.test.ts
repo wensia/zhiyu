@@ -94,3 +94,21 @@ describe("ledger account labels", () => {
     })).toContain("银行卡号 6222000000001234")
   })
 })
+
+describe("ledgerAccountDisplayLabel 银行卡增强", () => {
+  it("银行卡显示银行名与尾号", () => {
+    expect(ledgerAccountDisplayLabel({ accountType: "bank_card", name: "工资卡", bankName: "招商银行", cardNumber: "6222000000001234" })).toBe("招商银行 ····1234 · 工资卡")
+  })
+  it("name 就是卡号时不重复展示", () => {
+    expect(ledgerAccountDisplayLabel({ accountType: "bank_card", name: "6222000000001234", bankName: "招商银行", cardNumber: "6222000000001234" })).toBe("招商银行 ····1234")
+  })
+  it("无银行名无卡号退回类型标签", () => {
+    expect(ledgerAccountDisplayLabel({ accountType: "bank_card", name: "备用卡" })).toBe("银行卡 · 备用卡")
+  })
+  it("哨兵银行名不展示", () => {
+    expect(ledgerAccountDisplayLabel({ accountType: "bank_card", name: "特殊", bankName: "__other_bank__", cardNumber: "1234567890123456" })).toBe("银行卡 ····3456 · 特殊")
+  })
+  it("非银行卡类型不受影响", () => {
+    expect(ledgerAccountDisplayLabel({ accountType: "wechat_balance", name: "航子" })).toBe("微信零钱 · 航子")
+  })
+})

@@ -5,17 +5,19 @@ import { describe, expect, it, vi } from "vitest"
 
 vi.mock("./navigation", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./navigation")>()
+  const report = {
+    ...actual.navigationItems[0],
+    path: "/app/reports",
+    label: "报表",
+    mobileLabel: "报表",
+    group: "分析",
+  }
   return {
     ...actual,
-    navigationItems: [
-      ...actual.navigationItems,
-      {
-        ...actual.navigationItems[0],
-        path: "/app/reports",
-        label: "报表",
-        mobileLabel: "报表",
-        group: "分析",
-      },
+    navigationItems: [...actual.navigationItems, report],
+    navigationItemsForPlugins: (enabledPluginIds?: ReadonlySet<string>) => [
+      ...actual.navigationItemsForPlugins(enabledPluginIds),
+      report,
     ],
   }
 })

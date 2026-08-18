@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query"
 import { ArchiveIcon, PencilIcon, PlusIcon, RotateCcwIcon, SearchIcon, WalletCardsIcon } from "lucide-react"
 import { useEffect, useMemo, useState } from "react"
 
+import { useTopbarSlots } from "../components/topbar-slots"
 import { ApiClientError, api } from "../api/client"
 import { useIdempotentMutation } from "../api/use-idempotent-mutation"
 import type { LedgerAccount, LedgerAccountType } from "../api/types"
@@ -347,6 +348,7 @@ function AccountTable({
 export function AccountWorkspace() {
   const queryClient = useQueryClient()
   const toast = useToast()
+  const setTopbarSlots = useTopbarSlots()
   const [search, setSearch] = useState("")
   const [showArchived, setShowArchived] = useState(false)
   const [createOpen, setCreateOpen] = useState(false)
@@ -370,12 +372,20 @@ export function AccountWorkspace() {
     onError: (error) => toast({ title: "操作失败", description: error.message, type: "error" }),
   })
 
+  // 页面名与主操作归顶栏，和其它路由一处（kiln：Title Authority）。原来这里是一整条
+  // 正文标题带：eyebrow「资金溯源」+ h1「账户」+ 一句「配置付款与收款账户，让每一笔
+  // 资金往来都有明确去向。」——那句话在描述这屏是什么，删掉它用户的判断不会变，正是
+  // 规范里点名的填充副标题。
+  useEffect(() => {
+    setTopbarSlots({
+      title: "账户",
+      actions: <Button aria-label="新增账户" onClick={() => setCreateOpen(true)} variant="primary"><PlusIcon /><span className="button-label">新增账户</span></Button>,
+    })
+    return () => setTopbarSlots(undefined)
+  }, [setTopbarSlots])
+
   return (
     <main className="workspace account-workspace">
-      <header className="page-header">
-        <div><p className="eyebrow">资金溯源</p><h1>账户</h1><p>配置付款与收款账户，让每一笔资金往来都有明确去向。</p></div>
-        <Button aria-label="新增账户" onClick={() => setCreateOpen(true)} variant="primary"><PlusIcon /><span className="button-label">新增账户</span></Button>
-      </header>
       <section aria-label="账户筛选" className="toolbar account-toolbar">
         <label className="search-box"><SearchIcon /><span className="sr-only">搜索账户</span><input onChange={(event) => setSearch(event.target.value)} placeholder="搜索账户类型、账户、账户信息或备注" value={search} /></label>
         <CheckboxControl checked={showArchived} label="查看归档" onChange={(event) => setShowArchived(event.target.checked)} />

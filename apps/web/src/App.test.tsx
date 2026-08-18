@@ -7,7 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 import { AppShell } from "./App"
 import { AppToastProvider } from "./components/ui"
 import { useTopbarSlots } from "./components/topbar-slots"
-import { navigationItems, navigationShortcut } from "./navigation"
+import { navigationItems, navigationItemsForPlugins, navigationShortcut } from "./navigation"
 
 function LocationProbe() {
   const location = useLocation()
@@ -38,6 +38,7 @@ function renderShell(initialEntry = "/app/debts") {
               <Route path="statistics" element={<Page />} />
               <Route path="calendar-edge" element={<EdgePage />} />
               <Route path="accounts" element={<Page />} />
+              <Route path="settings/plugins" element={<Page />} />
             </Route>
           </Routes>
         </MemoryRouter>
@@ -50,7 +51,7 @@ beforeEach(() => {
   // 与 App.tsx 读写侧边栏折叠状态时的写法保持一致：Node 26 下 localStorage 是
   // 需要显式开启的实验特性，jsdom 里可能拿不到，不能假定它一定存在。
   window.localStorage?.clear()
-  window.localStorage?.setItem("zhiyu-sidebar-collapsed", "false")
+  window.localStorage?.setItem("zhiyu-sidebar-collapsed", "true")
   Reflect.deleteProperty(window, "__TAURI_INTERNALS__")
 })
 
@@ -65,12 +66,13 @@ describe("AppShell navigation shortcuts", () => {
     expect(screen.getByText("⌘1")).toBeInTheDocument()
     expect(screen.getByText("⌘2")).toBeInTheDocument()
     expect(screen.getByText("⌘5")).toBeInTheDocument()
+    expect(screen.getByText("⌘6")).toBeInTheDocument()
 
     fireEvent.keyUp(window, { key: "Meta" })
     expect(shell).not.toHaveAttribute("data-command-pressed")
   })
 
-  it("navigates with Command plus 1 through 5 in navigation order", () => {
+  it("navigates with Command plus 1 through 6 in navigation order", () => {
     renderShell()
 
     fireEvent.keyDown(window, { code: "Digit2", key: "¡", metaKey: true })
@@ -83,6 +85,8 @@ describe("AppShell navigation shortcuts", () => {
     expect(screen.getByLabelText("当前位置")).toHaveTextContent("/app/accounts")
     fireEvent.keyDown(window, { key: "1", metaKey: true })
     expect(screen.getByLabelText("当前位置")).toHaveTextContent("/app/debts")
+    fireEvent.keyDown(window, { key: "6", metaKey: true })
+    expect(screen.getByLabelText("当前位置")).toHaveTextContent("/app/settings/plugins")
   })
 
   it("does not navigate while editing text", () => {
@@ -100,7 +104,7 @@ describe("AppShell navigation shortcuts", () => {
       { ...navigationItems[0], path: "/app/reports", label: "报表", mobileLabel: "报表" },
     ]
 
-    expect(itemsWithNewPage.map((_, index) => navigationShortcut(index))).toEqual(["1", "2", "3", "4", "5", "6"])
+    expect(itemsWithNewPage.map((_, index) => navigationShortcut(index))).toEqual(["1", "2", "3", "4", "5", "6", "7"])
   })
 
   it("does not assign shortcuts after Command plus 9", () => {
@@ -182,10 +186,10 @@ describe("AppShell sidebar toggle", () => {
     const { container } = renderShell()
     // 默认即折叠，不需要先点一次切换按钮。
 
-    const debtLink = screen.getByRole("link", { name: "个人账本：债务" })
+    const debtNavItem = screen.getByRole("link", { name: "个人账本：债务" })
     expect(container.querySelector(".app-shell")).toHaveAttribute("data-sidebar", "collapsed")
-    expect(debtLink.querySelector(".nav-icon svg")).toBeInTheDocument()
-    expect(debtLink.querySelector(".nav-copy")).toHaveTextContent("债务")
+    expect(debtNavItem.querySelector(".nav-icon svg")).toBeInTheDocument()
+    expect(debtNavItem.querySelector(".nav-copy")).toHaveTextContent("债务")
     expect(container.querySelector(".nav-tooltip")).not.toBeInTheDocument()
   })
 })
@@ -195,6 +199,17 @@ describe("AppShell navigation groups", () => {
     const { container } = renderShell()
 
     expect(container.querySelector(".nav-group-label")).not.toBeInTheDocument()
+  })
+})
+
+describe("plugin navigation", () => {
+  it("keeps the original order while filtering disabled plugin contributions", () => {
+    expect(navigationItemsForPlugins(new Set(["bill-imports", "auto-categorize"])).map((item) => item.label)).toEqual([
+      "日历", "流水", "统计", "账户", "设置",
+    ])
+    expect(navigationItemsForPlugins(new Set(["debts", "bill-imports", "auto-categorize"])).map((item) => item.label)).toEqual([
+      "债务", "日历", "流水", "统计", "账户", "设置",
+    ])
   })
 })
 

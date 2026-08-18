@@ -2,10 +2,12 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { type ReactNode, useState } from "react"
 import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom"
 
 import { ApiClientError, api } from "../api/client"
 import { AppToastProvider } from "../components/ui"
+import { TopbarSlotContext, type TopbarSlots } from "../components/topbar-slots"
 import { AppShell } from "../App"
 import { elapsedCalendarDays } from "./debt-time"
 import { DebtDetailPage, DebtFormModal, DebtWorkspace } from "./debt-workspace"
@@ -21,8 +23,10 @@ vi.mock("../api/client", () => ({
     }
   },
   api: {
+    plugins: vi.fn(),
     debts: vi.fn(),
     debt: vi.fn(),
+    transactionLinkCandidates: vi.fn(),
     summary: vi.fn(),
     counterparties: vi.fn(),
     ledgerAccounts: vi.fn(),
@@ -87,9 +91,20 @@ function LocationProbe() {
   return <output data-testid="location">{pathname}</output>
 }
 
+// 页面名和主操作都住在顶栏插槽里（kiln：Title Authority），裸渲染工作区就看不到它们。
+// 这个替身按真实外壳的语义把插槽摆出来：标题是 h1，动作原样渲染。
+function TopbarHarness({ children }: { children: ReactNode }) {
+  const [slots, setSlots] = useState<TopbarSlots>()
+  return <TopbarSlotContext.Provider value={setSlots}>
+    {slots?.title ? <h1 className="topbar-title">{slots.title}</h1> : null}
+    <div data-testid="topbar-actions">{slots?.actions}</div>
+    {children}
+  </TopbarSlotContext.Provider>
+}
+
 function renderWorkspace(initialEntries = ["/app/debts"]) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={client}><AppToastProvider><MemoryRouter initialEntries={initialEntries}><LocationProbe /><Routes><Route path="/app/debts" element={<DebtWorkspace />} /><Route path="/app/debts/:id" element={<DebtDetailPage />} /></Routes></MemoryRouter></AppToastProvider></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><AppToastProvider><MemoryRouter initialEntries={initialEntries}><LocationProbe /><TopbarHarness><Routes><Route path="/app/debts" element={<DebtWorkspace />} /><Route path="/app/debts/:id" element={<DebtDetailPage />} /></Routes></TopbarHarness></MemoryRouter></AppToastProvider></QueryClientProvider>)
 }
 
 function renderWorkspaceWithShell(initialEntries = ["/app/debts"]) {
@@ -100,11 +115,17 @@ function renderWorkspaceWithShell(initialEntries = ["/app/debts"]) {
 describe("DebtWorkspace", () => {
   beforeEach(() => {
     vi.clearAllMocks()
+    vi.mocked(api.plugins).mockResolvedValue([
+      { id: "debts", name: "债务", description: "记录借入、借出及还款进度。", enabled: true, ownsTransactions: true, routePrefixes: ["/api/v1/debts"] },
+      { id: "bill-imports", name: "账单导入", description: "从受支持的账单来源导入流水。", enabled: true, ownsTransactions: false, routePrefixes: ["/api/v1/imports"] },
+      { id: "auto-categorize", name: "自动分类", description: "按规则为流水自动匹配分类。", enabled: true, ownsTransactions: false, routePrefixes: ["/api/v1/category-rules"] },
+    ])
     vi.mocked(api.debts).mockResolvedValue({ items: [debt], page: 1, pageSize: 20, total: 1 })
     vi.mocked(api.debt).mockResolvedValue(debt)
     vi.mocked(api.summary).mockResolvedValue({ lendOutRemainingCents: 80_000, borrowInRemainingCents: 0, netCents: 80_000, overdueCount: 0 })
     vi.mocked(api.counterparties).mockResolvedValue([{ id: "person-1", displayName: "阿青", note: "", archived: false, version: 1, lendOutRemainingCents: 80_000, borrowInRemainingCents: 0, netCents: 80_000, activeDebtCount: 1, overdueCount: 0 }])
     vi.mocked(api.ledgerAccounts).mockResolvedValue([ledgerAccount])
+    vi.mocked(api.transactionLinkCandidates).mockResolvedValue([])
   })
 
   it("renders the financial summary and due-soon row", async () => {
@@ -112,8 +133,11 @@ describe("DebtWorkspace", () => {
     expect(screen.getByRole("heading", { name: "债务" })).toBeInTheDocument()
     expect(screen.queryByText("个人往来")).not.toBeInTheDocument()
     expect(screen.queryByRole("heading", { name: "债务管理" })).not.toBeInTheDocument()
-    expect(screen.getByRole("button", { name: "新增债务" }).closest(".debt-commandbar")).not.toBeNull()
-    expect(screen.getByRole("region", { name: "债务汇总" }).closest(".debt-commandbar")).not.toBeNull()
+    expect(screen.getByTestId("topbar-actions")).toHaveTextContent("新增债务")
+    expect(screen.getByRole("button", { name: "新增债务" }).closest(".debt-commandbar")).toBeNull()
+    // 命令栏只放控件：汇总条搬到它下面自成一行，留在里面会把这排控件的高度撑乱。
+    expect(screen.getByRole("region", { name: "债务汇总" }).closest(".debt-commandbar")).toBeNull()
+    expect(screen.getByRole("region", { name: "债务汇总" })).toHaveClass("summary-strip")
     expect(await screen.findByRole("button", { name: "阿青" })).toBeInTheDocument()
     const row = screen.getByRole("row", { name: /阿青 借出/ })
     expect(screen.getByRole("columnheader", { name: "债务概况" })).toBeInTheDocument()
@@ -140,13 +164,49 @@ describe("DebtWorkspace", () => {
     await waitFor(() => expect(api.debts).toHaveBeenLastCalledWith(expect.objectContaining({ query: "朋友" })))
   })
 
+  it("归档后离开详情页回到列表，不把「找不到该笔债务」摆给用户看", async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.archiveDebt).mockResolvedValue(undefined as never)
+    renderWorkspaceWithShell(["/app/debts/debt-1"])
+    await screen.findByRole("heading", { name: "阿青" })
+
+    await user.click(await screen.findByRole("button", { name: "更多债务操作" }))
+    await user.click(await screen.findByRole("menuitem", { name: "归档债务" }))
+    const confirmDialog = await screen.findByRole("alertdialog")
+    await user.click(within(confirmDialog).getByRole("button", { name: "确认归档" }))
+
+    await waitFor(() => expect(api.archiveDebt).toHaveBeenCalled())
+    // 详情页对一笔刚归档的债务已经无事可做，留在这里只会展示一个空壳或报错
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/app/debts"))
+    expect(screen.queryByText("找不到该笔债务")).not.toBeInTheDocument()
+  })
+
+  it("删除后同样回到列表", async () => {
+    const user = userEvent.setup()
+    vi.mocked(api.deleteDebt).mockResolvedValue(undefined as never)
+    renderWorkspaceWithShell(["/app/debts/debt-1"])
+    await screen.findByRole("heading", { name: "阿青" })
+
+    await user.click(await screen.findByRole("button", { name: "更多债务操作" }))
+    await user.click(await screen.findByRole("menuitem", { name: "删除债务" }))
+    const confirmDialog = await screen.findByRole("alertdialog")
+    await user.click(within(confirmDialog).getByRole("button", { name: "确认删除" }))
+
+    await waitFor(() => expect(api.deleteDebt).toHaveBeenCalled())
+    await waitFor(() => expect(screen.getByTestId("location")).toHaveTextContent("/app/debts"))
+    expect(screen.queryByText("找不到该笔债务")).not.toBeInTheDocument()
+  })
+
   it("navigates to a dedicated debt URL and returns to the list", async () => {
     const user = userEvent.setup()
     renderWorkspaceWithShell()
     await user.click(await screen.findByRole("row", { name: /阿青 借出/ }))
     const backButton = await screen.findByRole("button", { name: "返回债务列表" })
     expect(backButton.closest(".topbar")).not.toBeNull()
-    expect(screen.getByRole("heading", { name: "债务详情" })).toHaveClass("sr-only")
+    // 详情路由的标题是这条记录本身：概览卡里的联系人名就是 h1，不再是一句 sr-only 的
+    // 「债务详情」——那句话在七条债务上念出来是同一个词。
+    expect(screen.getByRole("heading", { level: 1, name: "阿青" })).toHaveClass("detail-contact-name")
+    expect(screen.queryByRole("heading", { name: "债务详情" })).not.toBeInTheDocument()
     expect(screen.queryByText("个人往来")).not.toBeInTheDocument()
     expect(screen.getByText("初始借出 ¥1,000.00")).toBeInTheDocument()
     expect(screen.getByText("1 条")).toBeInTheDocument()
@@ -251,6 +311,7 @@ describe("DebtWorkspace", () => {
   })
 
   it("shows a cashless debt as a confirmed payable with no account movement", async () => {
+    const user = userEvent.setup()
     const cashlessDebt = {
       ...debt,
       direction: "borrow_in",
@@ -266,6 +327,48 @@ describe("DebtWorkspace", () => {
     expect(screen.getAllByText("无资金进出").length).toBeGreaterThan(1)
     expect(screen.getAllByText(/资金往来/).length).toBeGreaterThan(1)
     expect(screen.queryByText("历史未指定")).not.toBeInTheDocument()
+    await user.click(screen.getByRole("button", { name: "操作 2026-08-02 确认应付 ¥1,000.00" }))
+    expect(await screen.findByRole("menuitem", { name: "编辑记录" })).toBeInTheDocument()
+    expect(screen.queryByRole("menuitem", { name: /关联流水|管理流水/ })).not.toBeInTheDocument()
+  })
+
+  it("exposes edit and transaction linking actions on the initial cash movement", async () => {
+    const user = userEvent.setup()
+    renderWorkspace(["/app/debts/debt-1"])
+
+    await user.click(await screen.findByRole("button", { name: "操作 2026-08-02 初始借出 ¥1,000.00" }))
+    expect(await screen.findByRole("menuitem", { name: "编辑记录" })).toBeInTheDocument()
+    expect(screen.getByRole("menuitem", { name: "关联流水" })).toBeInTheDocument()
+    await user.click(screen.getByRole("menuitem", { name: "编辑记录" }))
+    expect(await screen.findByRole("dialog", { name: "编辑债务" })).toBeInTheDocument()
+  })
+
+  it("links an existing transaction and can switch back to the automatic transaction", async () => {
+    const user = userEvent.setup()
+    const candidate = { id: "transaction-1", kind: "expense" as const, amountCents: 100_000, occurredOn: "2026-08-02", note: "借给阿青", account: accountBrief }
+    vi.mocked(api.transactionLinkCandidates).mockResolvedValue([candidate])
+    vi.mocked(api.updateDebt).mockResolvedValue(debt)
+    const firstRender = renderWorkspace(["/app/debts/debt-1"])
+
+    await user.click(await screen.findByRole("button", { name: "操作 2026-08-02 初始借出 ¥1,000.00" }))
+    await user.click(screen.getByRole("menuitem", { name: "关联流水" }))
+    const linkDialog = await screen.findByRole("dialog", { name: "关联流水" })
+    await user.click(within(linkDialog).getByRole("button", { name: "从流水选取" }))
+    await user.click((await screen.findByText("借给阿青")).closest("button")!)
+    await user.click(within(linkDialog).getByRole("button", { name: "保存" }))
+
+    await waitFor(() => expect(api.transactionLinkCandidates).toHaveBeenCalledWith("debt-1", { amountCents: 100_000 }))
+    await waitFor(() => expect(api.updateDebt).toHaveBeenCalledWith("debt-1", { version: 2, accountId: "account-1", originKind: "cash_movement", counterpartyId: "person-1", principalCents: 100_000, occurredOn: "2026-08-02", dueOn: "2026-08-09", note: "朋友借款", transactionId: "transaction-1" }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
+
+    firstRender.unmount()
+    vi.mocked(api.debt).mockResolvedValue({ ...debt, transactionId: "transaction-1" })
+    renderWorkspace(["/app/debts/debt-1"])
+    await user.click(await screen.findByRole("button", { name: "操作 2026-08-02 初始借出 ¥1,000.00" }))
+    await user.click(screen.getByRole("menuitem", { name: "管理流水" }))
+    const unlinkDialog = await screen.findByRole("dialog", { name: "管理流水" })
+    await user.click(within(unlinkDialog).getByRole("button", { name: "使用自动流水" }))
+    await user.click(within(unlinkDialog).getByRole("button", { name: "保存" }))
+    await waitFor(() => expect(api.updateDebt).toHaveBeenLastCalledWith("debt-1", { version: 2, accountId: "account-1", originKind: "cash_movement", counterpartyId: "person-1", principalCents: 100_000, occurredOn: "2026-08-02", dueOn: "2026-08-09", note: "朋友借款", transactionId: null }, expect.objectContaining({ idempotencyKey: expect.any(String) })))
   })
 
   it("keeps legacy movements with no structured account readable", async () => {
@@ -474,6 +577,7 @@ describe("DebtWorkspace", () => {
     renderWorkspace(["/app/debts/debt-1"])
 
     await screen.findByText("追加借出 ¥10.00")
+    expect(screen.queryByRole("button", { name: /^操作 .*初始借出/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^操作 .*追加借出/ })).not.toBeInTheDocument()
     expect(screen.queryByRole("button", { name: /^操作 .*还款/ })).not.toBeInTheDocument()
   })

@@ -20,6 +20,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/auth/handoff-tickets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_handoff_ticket"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/auth/login": {
         parameters: {
             query?: never;
@@ -196,6 +212,106 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/categories": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_categories"];
+        put?: never;
+        post: operations["create_category"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/categories/recategorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["recategorize"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/categories/rules/{id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["revert_category_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/categories/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_category"];
+        options?: never;
+        head?: never;
+        patch: operations["update_category"];
+        trace?: never;
+    };
+    "/api/v1/category-rules": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_category_rules"];
+        put?: never;
+        post: operations["create_category_rule"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/category-rules/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Deleting a rule preserves its existing assignments and only clears their trace reference.
+         *     Call the rule revert endpoint before deletion when those assignments should be removed.
+         */
+        delete: operations["delete_category_rule"];
+        options?: never;
+        head?: never;
+        patch: operations["update_category_rule"];
+        trace?: never;
+    };
     "/api/v1/counterparties": {
         parameters: {
             query?: never;
@@ -237,6 +353,86 @@ export interface paths {
         };
         get: operations["dashboard_summary"];
         put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_dashboards"];
+        put?: never;
+        post: operations["create_dashboard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/default": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["create_default_dashboard"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/widget-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_widget_types"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/dashboards/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete: operations["delete_dashboard"];
+        options?: never;
+        head?: never;
+        patch: operations["update_dashboard"];
+        trace?: never;
+    };
+    "/api/v1/dashboards/{id}/widgets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put: operations["replace_dashboard_widgets"];
         post?: never;
         delete?: never;
         options?: never;
@@ -324,6 +520,22 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/debts/{id}/link-candidates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_link_candidates"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/debts/{id}/repayments": {
         parameters: {
             query?: never;
@@ -350,6 +562,166 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["restore_debt"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/duplicate-suspicions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_duplicate_suspicions"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/duplicate-suspicions/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_duplicate_suspicion"];
+        trace?: never;
+    };
+    "/api/v1/duplicate-suspicions/{id}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["confirm_duplicate_suspicion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/duplicate-suspicions/{id}/dismiss": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["dismiss_duplicate_suspicion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/duplicate-suspicions/{id}/revert": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["revert_duplicate_suspicion"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/imports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_imports"];
+        put?: never;
+        post: operations["upload_import"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/imports/mappings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["upsert_import_account_mapping"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/imports/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["get_import"];
+        put?: never;
+        post?: never;
+        delete: operations["discard_import"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/imports/{id}/account": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["bind_import_account"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/imports/{id}/commit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post: operations["commit_import"];
         delete?: never;
         options?: never;
         head?: never;
@@ -420,6 +792,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/plugins": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_plugins"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/plugins/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch: operations["update_plugin"];
+        trace?: never;
+    };
     "/api/v1/repayments/{id}": {
         parameters: {
             query?: never;
@@ -446,6 +850,38 @@ export interface paths {
         get?: never;
         put?: never;
         post: operations["reverse_repayment"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/self-transfer-aliases": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["list_self_transfer_aliases"];
+        put?: never;
+        post: operations["create_self_transfer_alias"];
+        delete: operations["delete_self_transfer_alias"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/statistics/aggregate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get: operations["statistics_aggregate"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -540,6 +976,16 @@ export interface components {
         AccountNameSource: "custom" | "derived";
         /** @enum {string} */
         AccountType: "wechat_balance" | "alipay_balance" | "bank_card" | "cash" | "digital_cny" | "other";
+        AggregateItem: {
+            /** Format: int64 */
+            count: number;
+            /** Format: int64 */
+            expenseCents: number;
+            /** Format: int64 */
+            incomeCents: number;
+            key: string;
+            label: string;
+        };
         BackupListItem: {
             createdAt: string;
             id: string;
@@ -555,6 +1001,63 @@ export interface components {
             lastSuccessAt?: string | null;
             latestSnapshotId?: string | null;
             running: boolean;
+        };
+        BindImportAccountRequest: {
+            accountId: string;
+        };
+        BindImportAccountResponse: {
+            accountId: string;
+            id: string;
+            /** Format: int64 */
+            updatedCount: number;
+        };
+        CategoryRuleConditionInput: {
+            matchField: string;
+            matchKind: string;
+            matchValue: string;
+        };
+        CategoryRuleConditionView: {
+            id: string;
+            matchField: string;
+            matchKind: string;
+            matchValue: string;
+        };
+        CategoryRuleView: {
+            categoryId: string;
+            conditions: components["schemas"]["CategoryRuleConditionView"][];
+            enabled: boolean;
+            id: string;
+            note: string;
+            /** Format: int64 */
+            priority: number;
+            sourceChannel: string;
+            warnings: string[];
+        };
+        CategoryView: {
+            archived: boolean;
+            children: components["schemas"]["CategoryView"][];
+            id: string;
+            kind: string;
+            name: string;
+            parentId?: string | null;
+            /** Format: int64 */
+            sortOrder: number;
+            /** Format: int64 */
+            version: number;
+        };
+        CommitImportRequest: {
+            accountId?: string | null;
+        };
+        CommitImportResponse: {
+            committedAt: string;
+            diagnostics: string[];
+            /** Format: int64 */
+            duplicateCount: number;
+            id: string;
+            /** Format: int64 */
+            importedCount: number;
+            status: string;
+            summary: components["schemas"]["ImportSummary"];
         };
         CounterpartyBrief: {
             displayName: string;
@@ -578,16 +1081,36 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        CreateCategoryRequest: {
+            kind: string;
+            name: string;
+            parentId?: string | null;
+            /** Format: int64 */
+            sortOrder?: number;
+        };
+        CreateCategoryRuleRequest: {
+            categoryId: string;
+            conditions: components["schemas"]["CategoryRuleConditionInput"][];
+            enabled?: boolean;
+            note?: string;
+            /** Format: int64 */
+            priority?: number;
+            sourceChannel?: string;
+        };
         CreateCounterpartyRequest: {
             displayName: string;
             note?: string;
         };
+        CreateDashboardRequest: {
+            name: string;
+        };
         CreateDebtAdditionRequest: {
-            accountId: string;
+            accountId?: string | null;
             /** Format: int64 */
             amountCents: number;
             effectiveOn: string;
             note?: string;
+            transactionId?: string | null;
         };
         CreateDebtRequest: {
             accountId?: string | null;
@@ -600,6 +1123,7 @@ export interface components {
             originKind?: null | components["schemas"]["DebtOriginKind"];
             /** Format: int64 */
             principalCents: number;
+            transactionId?: string | null;
         };
         CreateLedgerAccountRequest: {
             accountType: components["schemas"]["AccountType"];
@@ -615,10 +1139,15 @@ export interface components {
             phone?: string | null;
         };
         CreateRepaymentRequest: {
-            accountId: string;
+            accountId?: string | null;
             /** Format: int64 */
             amountCents: number;
             effectiveOn: string;
+            note?: string;
+            transactionId?: string | null;
+        };
+        CreateSelfTransferAliasRequest: {
+            alias: string;
             note?: string;
         };
         CreateTransactionRequest: {
@@ -629,6 +1158,8 @@ export interface components {
             kind: components["schemas"]["TransactionKind"];
             note?: string;
             occurredOn: string;
+            transferFromAccountId?: string | null;
+            transferToAccountId?: string | null;
         };
         DashboardSummary: {
             /** Format: int64 */
@@ -640,6 +1171,41 @@ export interface components {
             /** Format: int64 */
             overdueCount: number;
         };
+        DashboardView: {
+            id: string;
+            name: string;
+            /** Format: int64 */
+            position: number;
+            widgets: components["schemas"]["DashboardWidgetView"][];
+        };
+        DashboardWidgetInput: {
+            config?: unknown;
+            /** Format: int64 */
+            h: number;
+            id?: string | null;
+            pluginId?: string | null;
+            /** Format: int64 */
+            w: number;
+            widgetType: string;
+            /** Format: int64 */
+            x: number;
+            /** Format: int64 */
+            y: number;
+        };
+        DashboardWidgetView: {
+            config: unknown;
+            /** Format: int64 */
+            h: number;
+            id: string;
+            pluginId?: string | null;
+            /** Format: int64 */
+            w: number;
+            widgetType: string;
+            /** Format: int64 */
+            x: number;
+            /** Format: int64 */
+            y: number;
+        };
         DebtAdditionEventView: {
             account?: null | components["schemas"]["LedgerAccountBrief"];
             /** Format: int64 */
@@ -648,6 +1214,7 @@ export interface components {
             effectiveOn: string;
             id: string;
             note: string;
+            transactionId?: string | null;
         };
         /** @enum {string} */
         DebtDirection: "borrow_in" | "lend_out";
@@ -685,9 +1252,79 @@ export interface components {
             remainingCents: number;
             repayments: components["schemas"]["RepaymentEventView"][];
             status: components["schemas"]["DebtStatus"];
+            transactionId?: string | null;
             updatedAt: string;
             /** Format: int64 */
             version: number;
+        };
+        DeleteSelfTransferAliasRequest: {
+            id: string;
+        };
+        DiscardImportResponse: {
+            /** Format: int64 */
+            deletedCount: number;
+            id: string;
+            /** Format: int64 */
+            retainedModifiedCount: number;
+            status: string;
+        };
+        DuplicateActionTransactionView: {
+            accountId?: string | null;
+            /** Format: int64 */
+            amountCents: number;
+            archivedAt?: string | null;
+            categorySource: string;
+            eventId?: string | null;
+            id: string;
+            kind: string;
+            payeeName: string;
+            transferFromAccountId?: string | null;
+            transferToAccountId?: string | null;
+        };
+        DuplicateSuspicionActionResponse: {
+            event?: null | components["schemas"]["TransactionEventView"];
+            status: string;
+            suspicionId: string;
+            transactions: components["schemas"]["DuplicateActionTransactionView"][];
+        };
+        DuplicateSuspicionClusterView: {
+            clusterKey: string;
+            items: components["schemas"]["DuplicateSuspicionView"][];
+        };
+        DuplicateSuspicionListResponse: {
+            clusters: components["schemas"]["DuplicateSuspicionClusterView"][];
+            items: components["schemas"]["DuplicateSuspicionView"][];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            pageSize: number;
+            /** Format: int64 */
+            total: number;
+        };
+        DuplicateSuspicionView: {
+            clusterKey: string;
+            createdAt: string;
+            id: string;
+            matchRule: string;
+            reason: string;
+            /** Format: double */
+            score: number;
+            status: string;
+            transactionA: components["schemas"]["DuplicateTransactionView"];
+            transactionB: components["schemas"]["DuplicateTransactionView"];
+            updatedAt: string;
+        };
+        DuplicateTransactionView: {
+            accountId?: string | null;
+            /** Format: int64 */
+            amountCents: number;
+            currency: string;
+            id: string;
+            kind: string;
+            occurredAt?: string | null;
+            occurredAtPrecision: string;
+            occurredOn: string;
+            sourceChannel: string;
         };
         EmailRequest: {
             email: string;
@@ -697,6 +1334,105 @@ export interface components {
             fieldErrors?: unknown;
             message: string;
             requestId: string;
+        };
+        HandoffTicketResponse: {
+            ticket: string;
+        };
+        ImportAccountMappingResponse: {
+            accountId: string;
+            payMethod: string;
+            sourceChannel: string;
+        };
+        ImportBatchListItem: {
+            channel: string;
+            committedAt?: string | null;
+            createdAt: string;
+            fileName: string;
+            id: string;
+            periodEnd: string;
+            periodStart: string;
+            status: string;
+            /** Format: int64 */
+            totalCount: number;
+        };
+        ImportDetailResponse: {
+            accountId?: string | null;
+            channel: string;
+            committedAt?: string | null;
+            createdAt: string;
+            fileName: string;
+            /** Format: int64 */
+            filteredCount: number;
+            id: string;
+            issues: components["schemas"]["UnknownIssue"][];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            pageSize: number;
+            /** Format: int64 */
+            parserVersion: number;
+            payMethods: components["schemas"]["ImportPayMethodSummary"][];
+            periodEnd: string;
+            periodStart: string;
+            previousCommittedAt?: string | null;
+            previousCommittedBatchId?: string | null;
+            records: components["schemas"]["ImportRecordView"][];
+            status: string;
+            summary: components["schemas"]["ImportSummary"];
+            /** Format: int64 */
+            totalCount: number;
+        };
+        ImportListResponse: {
+            items: components["schemas"]["ImportBatchListItem"][];
+            /** Format: int32 */
+            page: number;
+            /** Format: int32 */
+            pageSize: number;
+            /** Format: int64 */
+            total: number;
+        };
+        ImportPayMethodSummary: {
+            accountId?: string | null;
+            /** Format: int64 */
+            count: number;
+            payMethod: string;
+        };
+        ImportRecordView: {
+            /** Format: int64 */
+            amountCents: number;
+            channelCategory: string;
+            channelStatus: string;
+            counterparty: string;
+            direction: string;
+            disposition: string;
+            externalId: string;
+            id: string;
+            merchantOrderId: string;
+            occurredAt: string;
+            occurredOn: string;
+            outcome: string;
+            payMethod: string;
+            product: string;
+            /** Format: int64 */
+            rowIndex: number;
+            sourceNote: string;
+            transactionId?: string | null;
+        };
+        ImportSummary: {
+            closed: components["schemas"]["ImportSummaryItem"];
+            duplicate: components["schemas"]["ImportSummaryItem"];
+            importExpense: components["schemas"]["ImportSummaryItem"];
+            importIncome: components["schemas"]["ImportSummaryItem"];
+            neutral: components["schemas"]["ImportSummaryItem"];
+            pending: components["schemas"]["ImportSummaryItem"];
+            unknown: components["schemas"]["ImportSummaryItem"];
+            zeroAmount: components["schemas"]["ImportSummaryItem"];
+        };
+        ImportSummaryItem: {
+            /** Format: int64 */
+            amountCents: number;
+            /** Format: int64 */
+            count: number;
         };
         LedgerAccountBrief: {
             accountType: components["schemas"]["AccountType"];
@@ -734,11 +1470,26 @@ export interface components {
             amountCents: number;
             archived: boolean;
             category: string;
+            categoryId?: string | null;
+            categoryRuleId?: string | null;
+            categoryRuleName?: string | null;
+            categorySource?: string;
             createdAt: string;
+            createdBy: string;
+            currency: string;
+            description: string;
             id: string;
             kind: components["schemas"]["TransactionKind"];
+            links: components["schemas"]["TransactionLinkView"][];
             note: string;
+            occurredAt?: string | null;
+            occurredAtPrecision: string;
             occurredOn: string;
+            payeeKey: string;
+            payeeName: string;
+            pnlScope: components["schemas"]["PnlScope"];
+            transferFromAccount?: null | components["schemas"]["LedgerAccountBrief"];
+            transferToAccount?: null | components["schemas"]["LedgerAccountBrief"];
             updatedAt: string;
             /** Format: int64 */
             version: number;
@@ -749,6 +1500,29 @@ export interface components {
         };
         MessageResponse: {
             message: string;
+        };
+        PluginView: {
+            description: string;
+            enabled: boolean;
+            id: string;
+            name: string;
+            ownsTransactions: boolean;
+            routePrefixes: string[];
+        };
+        PluginWidgetTypes: {
+            enabled: boolean;
+            pluginId: string;
+            widgets: components["schemas"]["WidgetDefinition"][];
+        };
+        /** @enum {string} */
+        PnlScope: "counted" | "excluded";
+        RecategorizeResponse: {
+            /** Format: int64 */
+            changed: number;
+            /** Format: int64 */
+            eligible: number;
+            /** Format: int64 */
+            matched: number;
         };
         RegisterRequest: {
             email: string;
@@ -766,6 +1540,7 @@ export interface components {
             note: string;
             reversed: boolean;
             reversesEventId?: string | null;
+            transactionId?: string | null;
         };
         ResetPasswordRequest: {
             newPassword: string;
@@ -774,6 +1549,19 @@ export interface components {
         ReverseRepaymentRequest: {
             effectiveOn: string;
             note?: string;
+        };
+        RevertCategoryRuleResponse: {
+            id: string;
+            /** Format: int64 */
+            revertedCount: number;
+        };
+        SelfTransferAliasView: {
+            alias: string;
+            createdAt: string;
+            id: string;
+            normalizedAlias: string;
+            note: string;
+            updatedAt: string;
         };
         SessionCookieView: {
             /** Format: int64 */
@@ -803,8 +1591,27 @@ export interface components {
             /** Format: int64 */
             incomeCents: number;
         };
+        TransactionEventView: {
+            id: string;
+            kind: string;
+        };
         /** @enum {string} */
-        TransactionKind: "income" | "expense";
+        TransactionKind: "income" | "expense" | "transfer";
+        TransactionLinkCandidate: {
+            account?: null | components["schemas"]["LedgerAccountBrief"];
+            /** Format: int64 */
+            amountCents: number;
+            id: string;
+            kind: components["schemas"]["TransactionKind"];
+            note: string;
+            occurredOn: string;
+        };
+        TransactionLinkView: {
+            kind: string;
+            label: string;
+            pluginId: string;
+            refId: string;
+        };
         TransactionListResponse: {
             items: components["schemas"]["LedgerTransactionView"][];
             /** Format: int32 */
@@ -827,11 +1634,38 @@ export interface components {
             /** Format: int64 */
             transactionCount: number;
         };
+        UnknownIssue: {
+            /** Format: int64 */
+            rowIndex: number;
+            status: string;
+        };
+        UpdateCategoryRequest: {
+            archived?: boolean | null;
+            name?: string | null;
+            /** Format: int64 */
+            sortOrder?: number | null;
+            /** Format: int64 */
+            version: number;
+        };
+        UpdateCategoryRuleRequest: {
+            categoryId?: string | null;
+            conditions?: components["schemas"]["CategoryRuleConditionInput"][] | null;
+            enabled?: boolean | null;
+            note?: string | null;
+            /** Format: int64 */
+            priority?: number | null;
+            sourceChannel?: string | null;
+        };
         UpdateCounterpartyRequest: {
             displayName: string;
             note?: string;
             /** Format: int64 */
             version: number;
+        };
+        UpdateDashboardRequest: {
+            name?: string | null;
+            /** Format: int64 */
+            position?: number | null;
         };
         UpdateDebtAdditionRequest: {
             accountId?: string | null;
@@ -840,6 +1674,7 @@ export interface components {
             effectiveOn: string;
             movementType?: string | null;
             note?: string;
+            transactionId?: string | null;
             /** Format: int64 */
             version: number;
         };
@@ -852,8 +1687,12 @@ export interface components {
             originKind?: null | components["schemas"]["DebtOriginKind"];
             /** Format: int64 */
             principalCents: number;
+            transactionId?: string | null;
             /** Format: int64 */
             version: number;
+        };
+        UpdateDuplicateSuspicionRequest: {
+            status: string;
         };
         UpdateLedgerAccountRequest: {
             accountType: components["schemas"]["AccountType"];
@@ -870,6 +1709,19 @@ export interface components {
             /** Format: int64 */
             version: number;
         };
+        UpdatePluginRequest: {
+            enabled: boolean;
+        };
+        UpdatePluginResponse: {
+            description: string;
+            enabled: boolean;
+            id: string;
+            name: string;
+            ownsTransactions: boolean;
+            /** Format: int64 */
+            reconciled: number;
+            routePrefixes: string[];
+        };
         UpdateRepaymentRequest: {
             accountId?: string | null;
             /** Format: int64 */
@@ -877,6 +1729,7 @@ export interface components {
             effectiveOn: string;
             movementType?: string | null;
             note?: string;
+            transactionId?: string | null;
             /** Format: int64 */
             version: number;
         };
@@ -885,11 +1738,19 @@ export interface components {
             /** Format: int64 */
             amountCents: number;
             category?: string;
+            categoryId?: string | null;
             kind: components["schemas"]["TransactionKind"];
             note?: string;
             occurredOn: string;
+            transferFromAccountId?: string | null;
+            transferToAccountId?: string | null;
             /** Format: int64 */
             version: number;
+        };
+        UpsertImportAccountMappingRequest: {
+            accountId: string;
+            payMethod: string;
+            sourceChannel: string;
         };
         UserView: {
             email: string;
@@ -900,6 +1761,23 @@ export interface components {
         VersionRequest: {
             /** Format: int64 */
             version: number;
+        };
+        WidgetDefinition: {
+            /** Format: int64 */
+            defaultH: number;
+            /** Format: int64 */
+            defaultW: number;
+            description: string;
+            id: string;
+            /** Format: int64 */
+            minH: number;
+            /** Format: int64 */
+            minW: number;
+            name: string;
+        };
+        WidgetTypesResponse: {
+            core: components["schemas"]["WidgetDefinition"][];
+            plugins: components["schemas"]["PluginWidgetTypes"][];
         };
     };
     responses: never;
@@ -929,6 +1807,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["MessageResponse"];
+                };
+            };
+        };
+    };
+    create_handoff_ticket: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HandoffTicketResponse"];
+                };
+            };
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };
@@ -1228,6 +2133,306 @@ export interface operations {
             };
         };
     };
+    list_categories: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryView"][];
+                };
+            };
+        };
+    };
+    create_category: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCategoryRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryView"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    recategorize: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecategorizeResponse"];
+                };
+            };
+        };
+    };
+    revert_category_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RevertCategoryRuleResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_category: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_category: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCategoryRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryView"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_category_rules: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryRuleView"][];
+                };
+            };
+        };
+    };
+    create_category_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCategoryRuleRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryRuleView"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_category_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_category_rule: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateCategoryRuleRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CategoryRuleView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_counterparties: {
         parameters: {
             query?: never;
@@ -1310,6 +2515,235 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DashboardSummary"];
+                };
+            };
+        };
+    };
+    list_dashboards: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardView"][];
+                };
+            };
+        };
+    };
+    create_dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateDashboardRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardView"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    create_default_dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardView"];
+                };
+            };
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardView"];
+                };
+            };
+        };
+    };
+    list_widget_types: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WidgetTypesResponse"];
+                };
+            };
+        };
+    };
+    delete_dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    update_dashboard: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDashboardRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    replace_dashboard_widgets: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DashboardWidgetInput"][];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DashboardView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };
@@ -1556,6 +2990,29 @@ export interface operations {
             };
         };
     };
+    list_link_candidates: {
+        parameters: {
+            query?: {
+                amountCents?: number | null;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TransactionLinkCandidate"][];
+                };
+            };
+        };
+    };
     create_repayment: {
         parameters: {
             query?: never;
@@ -1610,6 +3067,433 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DebtView"];
+                };
+            };
+        };
+    };
+    list_duplicate_suspicions: {
+        parameters: {
+            query?: {
+                page?: number | null;
+                pageSize?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateSuspicionListResponse"];
+                };
+            };
+        };
+    };
+    update_duplicate_suspicion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDuplicateSuspicionRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateSuspicionView"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    confirm_duplicate_suspicion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateSuspicionActionResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    dismiss_duplicate_suspicion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateSuspicionActionResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    revert_duplicate_suspicion: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DuplicateSuspicionActionResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    list_imports: {
+        parameters: {
+            query?: {
+                page?: number | null;
+                pageSize?: number | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportListResponse"];
+                };
+            };
+        };
+    };
+    upload_import: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: {
+            content: {
+                "multipart/form-data": unknown;
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportDetailResponse"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    upsert_import_account_mapping: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpsertImportAccountMappingRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportAccountMappingResponse"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    get_import: {
+        parameters: {
+            query?: {
+                page?: number | null;
+                pageSize?: number | null;
+                disposition?: string | null;
+                direction?: string | null;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ImportDetailResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    discard_import: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DiscardImportResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    bind_import_account: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindImportAccountRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BindImportAccountResponse"];
+                };
+            };
+        };
+    };
+    commit_import: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CommitImportRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CommitImportResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
         };
@@ -1779,6 +3663,58 @@ export interface operations {
             };
         };
     };
+    list_plugins: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PluginView"][];
+                };
+            };
+        };
+    };
+    update_plugin: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdatePluginRequest"];
+            };
+        };
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UpdatePluginResponse"];
+                };
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     update_repayment: {
         parameters: {
             query?: never;
@@ -1845,6 +3781,127 @@ export interface operations {
             };
         };
     };
+    list_self_transfer_aliases: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfTransferAliasView"][];
+                };
+            };
+        };
+    };
+    create_self_transfer_alias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateSelfTransferAliasRequest"];
+            };
+        };
+        responses: {
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SelfTransferAliasView"];
+                };
+            };
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    delete_self_transfer_alias: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeleteSelfTransferAliasRequest"];
+            };
+        };
+        responses: {
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
+    statistics_aggregate: {
+        parameters: {
+            query: {
+                from: string;
+                to: string;
+                groupBy: string;
+                accountId?: string | null;
+                categoryId?: string | null;
+                kind?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AggregateItem"][];
+                };
+            };
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
+                };
+            };
+        };
+    };
     list_transactions: {
         parameters: {
             query?: {
@@ -1852,6 +3909,7 @@ export interface operations {
                 kind?: string | null;
                 category?: string | null;
                 accountId?: string | null;
+                q?: string | null;
                 page?: number | null;
                 pageSize?: number | null;
             };
@@ -1890,6 +3948,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LedgerTransactionView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             409: {
@@ -1973,11 +4039,13 @@ export interface operations {
             };
         };
         responses: {
-            204: {
+            200: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content?: never;
+                content: {
+                    "application/json": components["schemas"]["LedgerTransactionView"];
+                };
             };
             409: {
                 headers: {
@@ -2010,6 +4078,14 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["LedgerTransactionView"];
+                };
+            };
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorBody"];
                 };
             };
             409: {

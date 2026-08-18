@@ -6,6 +6,7 @@ import type {
   CreateRepaymentInput,
   CreateTransactionInput,
   Debt,
+  TransactionLinkCandidate,
   DebtList,
   LedgerAccount,
   LedgerTransaction,
@@ -13,12 +14,42 @@ import type {
   Summary,
   TransactionList,
   TransactionMonthSummary,
+  CommitImportResult,
+  CommitImportInput,
+  BindImportAccountInput,
+  BindImportAccountResult,
+  Category,
+  CategoryRule,
+  DuplicateSuspicion,
+  DuplicateSuspicionList,
+  DuplicateSuspicionListParams,
+  DiscardImportResult,
+  ImportDetail,
+  ImportDetailParams,
+  ImportList,
+  ImportListParams,
+  UploadImportInput,
+  UpsertImportAccountMappingInput,
+  ImportAccountMapping,
+  CreateCategoryInput,
+  CreateCategoryRuleInput,
+  RecategorizeResult,
+  UpdateDuplicateSuspicionInput,
   UpdateDebtInput,
   UpdateDebtAdditionInput,
   UpdateLedgerAccountInput,
   UpdateRepaymentInput,
   UpdateTransactionInput,
   User,
+  Plugin,
+  UpdatePluginResult,
+  Dashboard,
+  CreateDashboardInput,
+  UpdateDashboardInput,
+  DashboardWidgetInput,
+  WidgetTypes,
+  StatisticsAggregateItem,
+  StatisticsAggregateParams,
 } from "./types"
 
 export class ApiClientError extends Error {
@@ -40,8 +71,8 @@ export class ApiClientError extends Error {
 // 页面看着完好，每个请求却都连不上——直说这件事，比让人去猜网络强。
 const IS_LOCAL_DEV_PAGE = ["127.0.0.1", "localhost"].includes(location.hostname)
 const NETWORK_UNREACHABLE_MESSAGE = IS_LOCAL_DEV_PAGE
-  ? "无法连接服务器：本地 Vite 代理可能已退出，请重新运行 pnpm tauri dev"
-  : "无法连接服务器，请检查网络后重试"
+  ? "无法连接服务，请检查后端是否运行；本地 Vite 代理也可能已退出"
+  : "无法连接服务，请检查后端是否运行或网络是否正常"
 
 /**
  * 请求根本没到达服务器：断网、DNS 失败、连接被拒、代理进程没了。
@@ -68,7 +99,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
       ...init,
       credentials: "include",
       headers: {
-        ...(init.body ? { "Content-Type": "application/json" } : {}),
+        ...(typeof init.body === "string" ? { "Content-Type": "application/json" } : {}),
         ...init.headers,
       },
     })
@@ -76,9 +107,26 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     throw new ApiNetworkError(cause)
   }
   if (response.status === 204) return undefined as T
-  const body = await response.json().catch(() => ({}))
-  if (!response.ok) throw new ApiClientError(response.status, body)
-  return body as T
+  if (!response.ok) {
+    // 错误响应可以没有 JSON body：网关的纯文本 502、代理超时页都算。这里容忍解析
+    // 失败，让状态码本身承载信息。
+    const body = await response.json().catch(() => ({}))
+    throw new ApiClientError(response.status, body)
+  }
+  // 成功响应必须是 JSON。以前这里和错误分支共用 `.catch(() => ({}))`，于是
+  // 「200 但 body 不是 JSON」被悄悄换成一个空对象返回给调用方——类型上还是
+  // T，运行时却什么都没有。桌面端 dev 把 /api/* 代理到线上，线上缺哪个路由，
+  // 请求就落到 SPA 的 catch-all 拿回 200 + index.html，调用方于是拿到 {}，
+  // 一路带到渲染层才炸成 `categories.flatMap is not a function`，整页白屏，
+  // 而真正的原因（路由不存在）在任何一层都看不到。宁可在这里就失败。
+  try {
+    return (await response.json()) as T
+  } catch {
+    throw new ApiClientError(response.status, {
+      code: "invalid_response",
+      message: `服务器返回了非 JSON 响应（${response.headers.get("content-type") || "无 content-type"}）：${path} 可能不存在或被代理拦截`,
+    })
+  }
 }
 
 /**
@@ -103,6 +151,53 @@ const writeHeaders = (options?: WriteOptions) => ({
 })
 
 export const api = {
+  plugins: () => request<Plugin[]>("/plugins"),
+  updatePlugin: (id: string, enabled: boolean, options?: WriteOptions) =>
+    request<UpdatePluginResult>(`/plugins/${id}`, {
+      method: "PATCH",
+      headers: writeHeaders(options),
+      body: JSON.stringify({ enabled }),
+    }),
+  dashboards: () => request<Dashboard[]>("/dashboards"),
+  createDashboard: (input: CreateDashboardInput, options?: WriteOptions) =>
+    request<Dashboard>("/dashboards", {
+      method: "POST",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
+  createDefaultDashboard: (options?: WriteOptions) =>
+    request<Dashboard>("/dashboards/default", {
+      method: "POST",
+      headers: writeHeaders(options),
+    }),
+  updateDashboard: (id: string, input: UpdateDashboardInput, options?: WriteOptions) =>
+    request<Dashboard>(`/dashboards/${id}`, {
+      method: "PATCH",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
+  deleteDashboard: (id: string, options?: WriteOptions) =>
+    request<void>(`/dashboards/${id}`, {
+      method: "DELETE",
+      headers: writeHeaders(options),
+    }),
+  replaceDashboardWidgets: (id: string, widgets: DashboardWidgetInput[], options?: WriteOptions) =>
+    request<Dashboard>(`/dashboards/${id}/widgets`, {
+      method: "PUT",
+      headers: writeHeaders(options),
+      body: JSON.stringify(widgets),
+    }),
+  dashboardWidgetTypes: () => request<WidgetTypes>("/dashboards/widget-types"),
+  statisticsAggregate: (params: StatisticsAggregateParams) => {
+    const query = new URLSearchParams()
+    query.set("from", params.from)
+    query.set("to", params.to)
+    query.set("groupBy", params.groupBy)
+    if (params.accountId) query.set("accountId", params.accountId)
+    if (params.categoryId) query.set("categoryId", params.categoryId)
+    if (params.kind) query.set("kind", params.kind)
+    return request<StatisticsAggregateItem[]>(`/statistics/aggregate?${query}`)
+  },
   register: (input: { email: string; password: string; timezone: string }) =>
     request<{ message: string }>("/auth/register", { method: "POST", body: JSON.stringify(input) }),
   verifyEmail: (token: string) =>
@@ -154,6 +249,11 @@ export const api = {
     return request<DebtList>(`/debts?${query}`)
   },
   debt: (id: string) => request<Debt>(`/debts/${id}`),
+  transactionLinkCandidates: (id: string, params: { amountCents?: number }) => {
+    const query = new URLSearchParams()
+    if (params.amountCents) query.set("amountCents", String(params.amountCents))
+    return request<TransactionLinkCandidate[]>(`/debts/${id}/link-candidates?${query}`)
+  },
   createDebt: (input: CreateDebtInput, options?: WriteOptions) =>
     request<Debt>("/debts", {
       method: "POST",
@@ -235,7 +335,7 @@ export const api = {
       body: JSON.stringify(input),
     }),
   deleteTransaction: (id: string, version: number, options?: WriteOptions) =>
-    request<void>(`/transactions/${id}`, {
+    request<LedgerTransaction>(`/transactions/${id}`, {
       method: "DELETE",
       headers: writeHeaders(options),
       body: JSON.stringify({ version }),
@@ -249,4 +349,84 @@ export const api = {
   transactionSummary: (month: string) =>
     request<TransactionMonthSummary>(`/transactions/summary?month=${encodeURIComponent(month)}`),
   transactionCategories: () => request<string[]>("/transactions/categories"),
+  categories: () => request<Category[]>("/categories"),
+  createCategory: (input: CreateCategoryInput, options?: WriteOptions) =>
+    request<Category>("/categories", {
+      method: "POST",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
+  createCategoryRule: (input: CreateCategoryRuleInput, options?: WriteOptions) =>
+    request<CategoryRule>("/category-rules", {
+      method: "POST",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
+  recategorize: (options?: WriteOptions) =>
+    request<RecategorizeResult>("/categories/recategorize", {
+      method: "POST",
+      headers: writeHeaders(options),
+    }),
+  imports: (params: ImportListParams = {}) => {
+    const query = new URLSearchParams()
+    if (params.page !== undefined) query.set("page", String(params.page))
+    if (params.pageSize !== undefined) query.set("pageSize", String(params.pageSize))
+    const suffix = query.size ? `?${query}` : ""
+    return request<ImportList>(`/imports${suffix}`)
+  },
+  importDetail: (id: string, params: ImportDetailParams = {}) => {
+    const query = new URLSearchParams()
+    if (params.page !== undefined) query.set("page", String(params.page))
+    if (params.pageSize !== undefined) query.set("pageSize", String(params.pageSize))
+    if (params.disposition) query.set("disposition", params.disposition)
+    if (params.direction) query.set("direction", params.direction)
+    const suffix = query.size ? `?${query}` : ""
+    return request<ImportDetail>(`/imports/${id}${suffix}`)
+  },
+  uploadImport: (input: UploadImportInput, options?: WriteOptions) => {
+    const body = new FormData()
+    body.append("file", input.file)
+    if (input.channel) body.append("channel", input.channel)
+    return request<ImportDetail>("/imports", {
+      method: "POST",
+      headers: writeHeaders(options),
+      body,
+    })
+  },
+  commitImport: (id: string, input: CommitImportInput, options?: WriteOptions) =>
+    request<CommitImportResult>(`/imports/${id}/commit`, {
+      method: "POST",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
+  bindImportAccount: (id: string, input: BindImportAccountInput, options?: WriteOptions) =>
+    request<BindImportAccountResult>(`/imports/${id}/account`, {
+      method: "POST",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
+  upsertImportAccountMapping: (input: UpsertImportAccountMappingInput, options?: WriteOptions) =>
+    request<ImportAccountMapping>("/imports/mappings", {
+      method: "POST",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
+  discardImport: (id: string, options?: WriteOptions) =>
+    request<DiscardImportResult>(`/imports/${id}`, {
+      method: "DELETE",
+      headers: writeHeaders(options),
+    }),
+  duplicateSuspicions: (params: DuplicateSuspicionListParams = {}) => {
+    const query = new URLSearchParams()
+    if (params.page !== undefined) query.set("page", String(params.page))
+    if (params.pageSize !== undefined) query.set("pageSize", String(params.pageSize))
+    const suffix = query.size ? `?${query}` : ""
+    return request<DuplicateSuspicionList>(`/duplicate-suspicions${suffix}`)
+  },
+  updateDuplicateSuspicion: (id: string, input: UpdateDuplicateSuspicionInput, options?: WriteOptions) =>
+    request<DuplicateSuspicion>(`/duplicate-suspicions/${id}`, {
+      method: "PATCH",
+      headers: writeHeaders(options),
+      body: JSON.stringify(input),
+    }),
 }

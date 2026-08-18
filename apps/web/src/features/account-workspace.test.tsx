@@ -2,9 +2,11 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query"
 import { render, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event"
 import { beforeEach, describe, expect, it, vi } from "vitest"
+import { type ReactNode, useState } from "react"
 
 import { api } from "../api/client"
 import { AppToastProvider } from "../components/ui"
+import { TopbarSlotContext, type TopbarSlots } from "../components/topbar-slots"
 import { AccountWorkspace } from "./account-workspace"
 import { OTHER_BANK_VALUE } from "./ledger-account"
 
@@ -68,9 +70,19 @@ const accounts = [
   },
 ]
 
+// 页面名和主操作住在顶栏插槽里（kiln：Title Authority），裸渲染工作区看不到它们。
+function TopbarHarness({ children }: { children: ReactNode }) {
+  const [slots, setSlots] = useState<TopbarSlots>()
+  return <TopbarSlotContext.Provider value={setSlots}>
+    {slots?.title ? <h1 className="topbar-title">{slots.title}</h1> : null}
+    <div data-testid="topbar-actions">{slots?.actions}</div>
+    {children}
+  </TopbarSlotContext.Provider>
+}
+
 function renderWorkspace() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
-  return render(<QueryClientProvider client={client}><AppToastProvider><AccountWorkspace /></AppToastProvider></QueryClientProvider>)
+  return render(<QueryClientProvider client={client}><AppToastProvider><TopbarHarness><AccountWorkspace /></TopbarHarness></AppToastProvider></QueryClientProvider>)
 }
 
 describe("AccountWorkspace", () => {
@@ -293,7 +305,7 @@ describe("AccountWorkspace", () => {
     renderWorkspace()
     await screen.findAllByText("工资卡尾号 1234")
 
-    await user.click(screen.getAllByRole("button", { name: "操作 银行卡 · 工资卡尾号 1234" })[0])
+    await user.click(screen.getAllByRole("button", { name: "操作 浦发银行 ····1234 · 工资卡尾号 1234" })[0])
     await user.click(await screen.findByRole("menuitem", { name: "编辑账户" }))
     const dialog = screen.getByRole("dialog", { name: "编辑账户" })
     expect(within(dialog).getByRole("combobox", { name: "银行（可选）" })).toHaveTextContent("其他银行")
@@ -326,7 +338,7 @@ describe("AccountWorkspace", () => {
     renderWorkspace()
     await screen.findAllByText("工资卡尾号 1234")
 
-    await user.click(screen.getAllByRole("button", { name: "操作 银行卡 · 工资卡尾号 1234" })[0])
+    await user.click(screen.getAllByRole("button", { name: "操作 浦发银行 ····1234 · 工资卡尾号 1234" })[0])
     await user.click(await screen.findByRole("menuitem", { name: "编辑账户" }))
     const dialog = screen.getByRole("dialog", { name: "编辑账户" })
     expect(dialog).toHaveClass("dialog-wide")
@@ -359,7 +371,7 @@ describe("AccountWorkspace", () => {
 
     expect(await screen.findAllByText("浦发银行", { exact: true })).toHaveLength(2)
     expect(screen.getAllByText("北京中关村支行", { exact: true })).toHaveLength(2)
-    await user.click(screen.getAllByRole("button", { name: "操作 银行卡 · 浦发银行" })[0])
+    await user.click(screen.getAllByRole("button", { name: "操作 浦发银行 ····1234" })[0])
     await user.click(await screen.findByRole("menuitem", { name: "编辑账户" }))
     const dialog = screen.getByRole("dialog", { name: "编辑账户" })
     expect(within(dialog).getByLabelText("自定义名称（可选）")).toHaveValue("")
@@ -381,7 +393,7 @@ describe("AccountWorkspace", () => {
     renderWorkspace()
     await screen.findAllByText("特殊银行账户")
 
-    await user.click(screen.getAllByRole("button", { name: "操作 银行卡 · 特殊银行账户" })[0])
+    await user.click(screen.getAllByRole("button", { name: "操作 银行卡 ····1234 · 特殊银行账户" })[0])
     await user.click(await screen.findByRole("menuitem", { name: "编辑账户" }))
     const dialog = screen.getByRole("dialog", { name: "编辑账户" })
     expect(within(dialog).getByRole("combobox", { name: "银行（可选）" })).toHaveTextContent("其他银行")

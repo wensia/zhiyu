@@ -27,7 +27,7 @@ import {
 import { formatDate, monthDays, parseDate, shiftDateByMonths, startOfMonth } from "./date-utils"
 
 type ButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
-  variant?: "default" | "primary" | "outline" | "ghost" | "destructive"
+  variant?: "default" | "primary" | "outline" | "ghost" | "quiet" | "destructive"
   size?: "default" | "sm" | "icon" | "icon-sm"
 }
 
@@ -294,6 +294,7 @@ export function PasswordInput(props: Omit<InputHTMLAttributes<HTMLInputElement>,
       <Input {...props} type={visible ? "text" : "password"} />
       <Button
         aria-label={visible ? "隐藏密码" : "显示密码"}
+        className="button-quiet"
         onClick={() => setVisible((value) => !value)}
         size="icon-sm"
         variant="ghost"
@@ -334,7 +335,7 @@ export function ActionMenu({
   quiet = false,
 }: {
   label: string
-  items: Array<{ label: string; icon?: ReactNode; onSelect: () => void; destructive?: boolean }>
+  items: Array<{ label: string; icon?: ReactNode; onSelect: () => void; destructive?: boolean; disabled?: boolean; title?: string }>
   quiet?: boolean
 }) {
   return (
@@ -342,7 +343,7 @@ export function ActionMenu({
       <DropdownPrimitive.Trigger asChild><Button aria-label={label} className={quiet ? "button-quiet" : undefined} size="icon-sm" variant="ghost"><EllipsisIcon /></Button></DropdownPrimitive.Trigger>
       <DropdownPrimitive.Portal>
         <DropdownPrimitive.Content align="end" className="menu" sideOffset={4}>
-          {items.map((item) => <DropdownPrimitive.Item className={item.destructive ? "menu-item-destructive" : undefined} key={item.label} onSelect={item.onSelect}>{item.icon}{item.label}</DropdownPrimitive.Item>)}
+          {items.map((item) => <DropdownPrimitive.Item className={item.destructive ? "menu-item-destructive" : undefined} disabled={item.disabled} key={item.label} onSelect={item.onSelect} title={item.title}>{item.icon}{item.label}</DropdownPrimitive.Item>)}
         </DropdownPrimitive.Content>
       </DropdownPrimitive.Portal>
     </DropdownPrimitive.Root>
@@ -481,6 +482,19 @@ export function CreatableSelect({
     document.addEventListener("keydown", closeOnEscape, { capture: true })
     return () => document.removeEventListener("keydown", closeOnEscape, { capture: true })
   }, [])
+  // Blur alone cannot dismiss the popup. Callers wrap the control in a Field,
+  // which renders a <label>, so clicking the blank space of that label keeps
+  // focus on the input and no blur ever fires.
+  useEffect(() => {
+    const closeOnOutsidePointer = (event: globalThis.PointerEvent) => {
+      if (!openRef.current) return
+      if (rootRef.current?.contains(event.target as Node)) return
+      setOpen(false)
+      setActiveIndex(-1)
+    }
+    document.addEventListener("pointerdown", closeOnOutsidePointer, { capture: true })
+    return () => document.removeEventListener("pointerdown", closeOnOutsidePointer, { capture: true })
+  }, [])
   const selected = options.find((option) => option.value === value)
   const display = selected ? selected.label : text
   const query = selected ? "" : text.trim()
@@ -525,6 +539,9 @@ export function CreatableSelect({
 
   return (
     <div className={`creatable-select ${className}`} ref={rootRef}>
+      {/* The popup opens on pointerdown rather than focus or click: the surrounding
+          Field is a <label>, so clicking its blank space hands focus and a synthetic
+          click back to the input, which would reopen what was just dismissed. */}
       <input
         aria-activedescendant={open && activeIndex >= 0 ? `${listId}-${activeIndex}` : undefined}
         aria-autocomplete="list"
@@ -536,8 +553,8 @@ export function CreatableSelect({
         disabled={disabled}
         onBlur={() => { setOpen(false); setActiveIndex(-1) }}
         onChange={(event) => { onTextChange(event.target.value); if (value) onSelect(""); setOpen(true); setActiveIndex(-1) }}
-        onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
+        onPointerDown={() => setOpen(true)}
         placeholder={placeholder}
         role="combobox"
         value={display}
@@ -646,7 +663,7 @@ export function ConfirmDialog({
   open: boolean
   onOpenChange: (open: boolean) => void
   title: string
-  description: string
+  description: ReactNode
   confirmLabel: string
   onConfirm: () => void
   pending?: boolean
@@ -677,53 +694,111 @@ export function InlineNotice({ type = "info", children }: { type?: "info" | "err
   return <div className={`notice notice-${type}`} role={type === "error" ? "alert" : "status"}>{children}</div>
 }
 
+/** 首页 + 省略 + 当前页及左右邻页 + 省略 + 末页：槽位恒为 7，条带宽度不随当前页抖动。 */
+const PAGE_SLOTS = 7
+
+function pageRange(start: number, end: number) {
+  return Array.from({ length: Math.max(0, end - start + 1) }, (_, index) => start + index)
+}
+
+function pageItems(current: number, pageCount: number): Array<number | "gap"> {
+  if (pageCount <= PAGE_SLOTS) return pageRange(1, pageCount)
+  const windowStart = Math.max(Math.min(current - 1, pageCount - 4), 3)
+  const windowEnd = Math.min(Math.max(current + 1, 5), pageCount - 2)
+  return [
+    1,
+    // 空档只差一页时直接显示那一页，省略号不能比它省略掉的东西还占地方
+    windowStart > 3 ? "gap" : 2,
+    ...pageRange(windowStart, windowEnd),
+    windowEnd < pageCount - 2 ? "gap" : pageCount - 1,
+    pageCount,
+  ]
+}
+
 export function TablePagination({
   page,
   pageSize,
   total,
   onPageChange,
+  onPageSizeChange,
+  pageSizeOptions = [20, 50, 100],
+  unit = "条",
   disabled = false,
 }: {
   page: number
   pageSize: number
   total: number
   onPageChange: (page: number) => void
+  /** 传了才渲染每页条数选择器；切换时由调用方负责回到第 1 页。 */
+  onPageSizeChange?: (pageSize: number) => void
+  pageSizeOptions?: number[]
+  unit?: string
   disabled?: boolean
 }) {
   const pageCount = Math.max(1, Math.ceil(total / pageSize))
   const current = Math.min(Math.max(page, 1), pageCount)
-  const start = Math.max(1, Math.min(current - 1, pageCount - 2))
-  const pages = Array.from({ length: Math.min(3, pageCount) }, (_, index) => start + index)
-  const options = useMemo(() => Array.from({ length: pageCount }, (_, index) => ({ value: String(index + 1), label: `第 ${index + 1} 页` })), [pageCount])
+  const items = useMemo(() => pageItems(current, pageCount), [current, pageCount])
+  const sizeOptions = useMemo(
+    () => pageSizeOptions.map((value) => ({ value: String(value), label: `每页 ${value} ${unit}` })),
+    [pageSizeOptions, unit],
+  )
   return (
     <footer className="pagination">
-      <span>共 {total} 笔</span>
-      {pageCount > 1 ? (
-        <div className="pagination-pages">
-          {pages.map((value) => (
-            <Button
-              aria-current={value === current ? "page" : undefined}
-              aria-label={`第 ${value} 页`}
-              disabled={disabled}
-              key={value}
-              onClick={() => onPageChange(value)}
-              size="sm"
-              variant={value === current ? "primary" : "outline"}
-            >
-              {value}
-            </Button>
-          ))}
+      <span className="pagination-total">共 {total} {unit}</span>
+      <div className="pagination-controls">
+        {onPageSizeChange ? (
           <Select
-            ariaLabel="跳转页码"
+            ariaLabel="每页条数"
+            className="pagination-size"
             disabled={disabled}
-            onValueChange={(value) => onPageChange(Number(value))}
-            options={options}
+            onValueChange={(value) => onPageSizeChange(Number(value))}
+            options={sizeOptions}
             side="top"
             size="sm"
-            value={String(current)}
+            value={String(pageSize)}
           />
-        </div>
-      ) : <span aria-hidden="true" />}
+        ) : null}
+        {pageCount > 1 ? (
+          <nav aria-label="分页" className="pagination-pages">
+            <Button
+              aria-label="上一页"
+              disabled={disabled || current === 1}
+              onClick={() => onPageChange(current - 1)}
+              size="icon-sm"
+            >
+              <ChevronLeftIcon />
+            </Button>
+            <span className="pagination-window">
+              {items.map((item, index) => item === "gap" ? (
+                <span aria-hidden="true" className="pagination-gap" key={`gap-${index}`}>…</span>
+              ) : (
+                <Button
+                  aria-current={item === current ? "page" : undefined}
+                  aria-label={`第 ${item} 页`}
+                  className="pagination-page"
+                  disabled={disabled}
+                  key={item}
+                  onClick={() => { if (item !== current) onPageChange(item) }}
+                  size="sm"
+                  variant={item === current ? "primary" : "quiet"}
+                >
+                  {item}
+                </Button>
+              ))}
+              {/* 窄屏只留当前页，总页数改由这里交代 */}
+              <span className="pagination-of">/ {pageCount}</span>
+            </span>
+            <Button
+              aria-label="下一页"
+              disabled={disabled || current === pageCount}
+              onClick={() => onPageChange(current + 1)}
+              size="icon-sm"
+            >
+              <ChevronRightIcon />
+            </Button>
+          </nav>
+        ) : null}
+      </div>
     </footer>
   )
 }
@@ -762,12 +837,13 @@ export function AppToastProvider({ children }: { children: ReactNode }) {
               <ToastPrimitive.Title>{item.title}</ToastPrimitive.Title>
               {item.description ? <ToastPrimitive.Description>{item.description}</ToastPrimitive.Description> : null}
             </div>
+            {/* 没有关闭键：通知 3.6 秒自走，右滑可以提前赶走它。一个 32px 的 X 会把
+                只有一行字的通知撑到 58px，让文字上下留白对不上，代价远大于它的用处。 */}
             {item.action ? (
               <ToastPrimitive.Action altText={item.action.label} asChild>
                 <Button onClick={item.action.onSelect} size="sm" variant="outline">{item.action.label}</Button>
               </ToastPrimitive.Action>
             ) : null}
-            <ToastPrimitive.Close asChild><Button aria-label="关闭通知" size="icon-sm" variant="ghost"><XIcon /></Button></ToastPrimitive.Close>
           </ToastPrimitive.Root>
         ))}
         <ToastPrimitive.Viewport className="toast-viewport" />

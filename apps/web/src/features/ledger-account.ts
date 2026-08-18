@@ -45,12 +45,21 @@ export function ledgerAccountTypeLabel(accountType: LedgerAccountType) {
   return LEDGER_ACCOUNT_TYPE_LABELS[accountType]
 }
 
-export function ledgerAccountDisplayLabel(account: { accountType: LedgerAccountType; name: string } | null | undefined) {
+export function ledgerAccountDisplayLabel(account: { accountType: LedgerAccountType; name: string; bankName?: string | null; cardNumber?: string | null } | null | undefined) {
   if (!account) return "历史未指定"
-  const type = ledgerAccountTypeLabel(account.accountType)
+  // 银行卡尽量说人话：类型位换成银行名，再带卡号尾 4 位。用户的账户名经常就是
+  // 裸卡号或手机号（随手填的），只靠 name 在下拉里无法区分是哪个账户。
+  const isBank = account.accountType === "bank_card"
+  // OTHER_BANK_VALUE 是选择器的内部哨兵，万一被存进 bankName 也不能展示给用户
+  const rawBank = isBank ? account.bankName?.trim() : ""
+  const bank = rawBank === OTHER_BANK_VALUE ? "" : rawBank
+  const digits = isBank ? (account.cardNumber ?? "").replace(/\D/g, "") : ""
+  const type = bank || ledgerAccountTypeLabel(account.accountType)
+  const tail = digits.length >= 4 ? ` ····${digits.slice(-4)}` : ""
   const name = account.name.trim()
-  if (!name || name === type) return type
-  return `${type} · ${name}`
+  // name 缺失、与类型重复、或本身就是这串卡号时，不再重复展示
+  if (!name || name === type || (digits && name.replace(/\D/g, "") === digits)) return `${type}${tail}`
+  return `${type}${tail} · ${name}`
 }
 
 export function ledgerAccountDetailItems(account: LedgerAccountDetails): LedgerAccountDetailItem[] {
