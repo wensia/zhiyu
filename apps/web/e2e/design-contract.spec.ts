@@ -68,10 +68,27 @@ test("kiln 渲染契约覆盖每条路由", async ({ page }, testInfo) => {
   await auditPage(page, `登录页(${testInfo.project.name})`, { kind: "landing", report })
 
   await registerVerifyLogin(page)
+  // 统计页的面板只有在有数据时才渲染，空账号进去是一张空状态——契约就审计不到那四个
+  // 面板。先经 API 记一笔，让 dashboard 真的摆出来。
+  const created = await page.evaluate(async () => {
+    const response = await fetch("/api/v1/transactions", {
+      method: "POST",
+      headers: { "Idempotency-Key": crypto.randomUUID(), "Content-Type": "application/json" },
+      body: JSON.stringify({ kind: "expense", amountCents: 1234, occurredOn: new Date().toISOString().slice(0, 10), note: "契约用例", category: "餐饮" }),
+    })
+    return { ok: response.ok, body: await response.text() }
+  })
+  expect(created.ok, created.body).toBeTruthy()
+
   for (const [label, path] of WORKBENCH_ROUTES) {
     await page.goto(path)
     if (path === "/app/statistics") {
+      // 新账号还没有仪表盘，统计页先给一张「使用默认布局」的引导。isVisible() 不等待，
+      // 页面刚打开时查询还在飞，直接问必然是 false —— 于是引导没点、面板没建，后面等
+      // 面板标题只能超时。先等到「引导」或「面板」其中之一落地，再决定要不要点。
       const useDefault = page.getByRole("button", { name: "使用默认布局" })
+      const firstWidget = page.getByRole("heading", { name: "收支趋势" })
+      await expect(useDefault.or(firstWidget).first()).toBeVisible()
       if (await useDefault.isVisible()) await useDefault.click()
       await expect(page.getByRole("heading", { name: "收支趋势" })).toBeVisible()
       await expect(page.getByRole("heading", { name: "分类占比" })).toBeVisible()

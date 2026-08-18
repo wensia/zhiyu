@@ -24,7 +24,7 @@
     "@radix-ui/react-toast": "^1.2.23",
     "@tanstack/react-query": "^5.87.1",
     "@tanstack/react-table": "^8.21.3",
-    "kiln": "git+https://github.com/wensia/kiln.git#5167be340a18094ac59fa8cef17d09dcc337abd4",
+    "kiln": "git+https://github.com/wensia/kiln.git#a26c78f4c46ae47ff4679150222a299d8680f731",
     "lucide-react": "^0.542.0",
     "react": "^19.1.1",
     "react-dom": "^19.1.1",

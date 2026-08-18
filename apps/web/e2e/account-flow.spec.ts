@@ -84,7 +84,7 @@ test("structured account details create, display, search and edit", async ({ pag
   await expect(list.getByText("浦发银行", { exact: true })).toBeVisible()
   await page.getByPlaceholder("搜索账户类型、账户、账户信息或备注").fill("")
 
-  await list.getByRole("button", { name: "操作 银行卡 · 6222000000001234" }).click()
+  await list.getByRole("button", { name: "操作 浦发银行 ····1234" }).click()
   await page.getByRole("menuitem", { name: "编辑账户" }).click()
   const editDialog = page.getByRole("dialog", { name: "编辑账户" })
   await expect(editDialog.getByRole("combobox", { name: "银行（可选）" })).toHaveText("其他银行")

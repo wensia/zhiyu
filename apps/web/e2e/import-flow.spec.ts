@@ -159,31 +159,29 @@ test("bill import happy path includes zero amount, commit, duplicate and edited 
   const initialRow = page.locator(".timeline-row").filter({ hasText: `¥${(imported.amountCents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` })
   await expect(initialRow.getByText("已关联流水", { exact: false })).toBeVisible()
 
-  // 先清理创建债务时自动带入的关联，再从初始记录行完整验证关联与取消关联。
+  // 迁移 0024 把债务的现金往来并进了 ledger_transactions：现金变动**始终**对应一笔流水，
+  // 「取消关联」这个状态不再存在。能做的是两件——退回系统自动建的那笔，或改绑到另一笔
+  // 已入账流水。顺序不能反：候选池排除了已被债务占用的流水，所以要先退回自动流水，把
+  // 导入的那笔释放回池子，才谈得上再把它挑回来。
   await initialRow.getByRole("button", { name: /^操作 / }).click()
-  await page.getByRole("menuitem", { name: "取消关联" }).click()
-  let linkDialog = page.getByRole("dialog", { name: "管理关联流水" })
-  await linkDialog.getByRole("button", { name: "取消选择" }).click()
+  await page.getByRole("menuitem", { name: "管理流水" }).click()
+  let linkDialog = page.getByRole("dialog", { name: "管理流水" })
+  await linkDialog.getByRole("button", { name: "使用自动流水" }).click()
   await linkDialog.getByRole("button", { name: "保存" }).click()
-  await expect(initialRow.getByText("已关联流水", { exact: false })).toBeHidden()
-
-  await initialRow.getByRole("button", { name: /^操作 / }).click()
-  await page.getByRole("menuitem", { name: "关联流水" }).click()
-  linkDialog = page.getByRole("dialog", { name: "关联流水" })
-  await linkDialog.getByRole("button", { name: "从流水选取" }).click()
-  const candidateDialog = page.getByRole("dialog", { name: "选择已入账流水" })
-  await candidateDialog.getByRole("button").filter({ hasText: editedNote }).click()
-  await linkDialog.getByRole("button", { name: "保存" }).click()
+  await expect(page.locator(".toast-viewport")).toContainText("已使用自动流水")
   await expect(initialRow.getByText("已关联流水", { exact: false })).toBeVisible()
 
   await initialRow.getByRole("button", { name: /^操作 / }).click()
-  await page.getByRole("menuitem", { name: "取消关联" }).click()
-  linkDialog = page.getByRole("dialog", { name: "管理关联流水" })
-  await linkDialog.getByRole("button", { name: "取消选择" }).click()
+  await page.getByRole("menuitem", { name: "管理流水" }).click()
+  linkDialog = page.getByRole("dialog", { name: "管理流水" })
+  await linkDialog.getByRole("button", { name: "更换流水" }).click()
+  const candidateDialog = page.getByRole("dialog", { name: "选择已入账流水" })
+  await candidateDialog.getByRole("button").filter({ hasText: editedNote }).click()
   await linkDialog.getByRole("button", { name: "保存" }).click()
-  await expect(initialRow.getByText("已关联流水", { exact: false })).toBeHidden()
+  await expect(page.locator(".toast-viewport")).toContainText("流水已关联")
+  await expect(initialRow.getByText("已关联流水", { exact: false })).toBeVisible()
 
-  // 另一个渠道提交为未绑定，再从已入账详情顶栏为整批补绑。
+  // 另一个渠道走完整入账，验证批次账户由入账结果推断出来。
   await page.goto("/app/transactions/imports")
   await page.getByRole("button", { name: "选择文件" }).click()
   await page.getByLabel("账单文件", { exact: true }).setInputFiles(wechatFixture)
@@ -192,13 +190,10 @@ test("bill import happy path includes zero amount, commit, duplicate and edited 
   await bindUnmappedPaymentMethods(page, "支付宝余额 · 导入测试账户")
   await page.getByRole("button", { name: "确认入账" }).click()
   await page.getByRole("alertdialog").getByRole("button", { name: "确认入账" }).click()
-  await expect(page.getByRole("button", { name: "绑定账户" })).toBeVisible()
-  await page.getByRole("button", { name: "绑定账户" }).click()
-  await page.getByRole("combobox", { name: "补绑账户" }).click()
-  await page.getByRole("option", { name: "支付宝余额 · 导入测试账户", exact: true }).click()
-  await page.getByRole("button", { name: "确认绑定" }).click()
-  await expect(page.locator(".toast-viewport")).toContainText("账户绑定完成")
+  // 批次账户不再需要手工补绑：入账后由结果推断——本批交易都落在同一个账户，详情页
+  // 直接显示它。顶栏那颗「绑定账户」只留给账户不唯一、或整批都没有账户的批次。
   await expect(page.getByRole("region", { name: "账户" })).toContainText("导入测试账户")
+  await expect(page.getByRole("button", { name: "绑定账户" })).toHaveCount(0)
 
   await upload(page)
   await page.getByRole("tab", { name: "重复交易" }).click()

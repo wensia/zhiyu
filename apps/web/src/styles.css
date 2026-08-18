@@ -688,7 +688,7 @@ td[data-sticky-cell="right"] { z-index: 20; }
 .tx-amount-cell { font-variant-numeric: tabular-nums; }
 .tx-note { display: block; max-width: 320px; overflow: hidden; color: var(--muted-foreground); text-overflow: ellipsis; white-space: nowrap; }
 .tx-record-sub { display: block; color: var(--muted-foreground); font-size: var(--text-tiny); }
-.tx-category-entry { min-height: 20px; width: max-content; max-width: 100%; display: inline-flex; align-items: center; margin-top: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0 var(--space-1); color: var(--muted-foreground); background: color-mix(in srgb, var(--muted) 45%, var(--card)); cursor: pointer; font: inherit; font-size: var(--text-tiny); font-weight: 500; line-height: var(--leading-tight); }
+.tx-category-entry { min-height: var(--control-height-sm); width: max-content; max-width: 100%; display: inline-flex; align-items: center; margin-top: var(--space-1); border: 1px solid var(--border); border-radius: var(--radius-control); padding: 0 var(--space-1); color: var(--muted-foreground); background: color-mix(in srgb, var(--muted) 45%, var(--card)); cursor: pointer; font: inherit; font-size: var(--text-tiny); font-weight: 500; line-height: var(--leading-tight); }
 .tx-category-entry:hover { border-color: color-mix(in srgb, var(--foreground) 25%, transparent); color: var(--foreground); background: var(--muted); }
 .tx-category-entry:focus-visible { outline: none; border-color: color-mix(in srgb, var(--primary) 70%, transparent); box-shadow: var(--ring-focus); }
 .tx-category-entry[data-empty="true"] { color: var(--primary); background: var(--primary-subtle); }

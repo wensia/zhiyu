@@ -44,8 +44,8 @@ importers:
         specifier: ^8.21.3
         version: 8.21.3(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
       kiln:
-        specifier: git+https://github.com/wensia/kiln.git#5167be340a18094ac59fa8cef17d09dcc337abd4
-        version: https://codeload.github.com/wensia/kiln/tar.gz/5167be340a18094ac59fa8cef17d09dcc337abd4
+        specifier: git+https://github.com/wensia/kiln.git#a26c78f4c46ae47ff4679150222a299d8680f731
+        version: https://codeload.github.com/wensia/kiln/tar.gz/a26c78f4c46ae47ff4679150222a299d8680f731
       lucide-react:
         specifier: ^0.542.0
         version: 0.542.0(react@19.2.8)
@@ -1392,6 +1392,7 @@ packages:
 
   clsx@2.1.1:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
+    engines: {node: '>=6'}
 
   color-convert@2.0.1:
     resolution: {integrity: sha512-RRECPsj7iu/xb5oKYcsFHSppFNnsj/52OVTRKb4zP5onXwVF3zVmmToNcOfGC+CRDpfK/U584fMg38ZHCaElKQ==}
@@ -1742,9 +1743,9 @@ packages:
   keyv@4.5.4:
     resolution: {integrity: sha512-oxVHkHR/EJf2CNXnWxRLW6mg7JyCCUcG0DtEGmL2ctUo1PNTin1PUil+r/+4r5MpVgC/fn1kjsx7mjSujKqIpw==}
 
-  kiln@https://codeload.github.com/wensia/kiln/tar.gz/5167be340a18094ac59fa8cef17d09dcc337abd4:
-    resolution: {tarball: https://codeload.github.com/wensia/kiln/tar.gz/5167be340a18094ac59fa8cef17d09dcc337abd4}
-    version: 3.11.2
+  kiln@https://codeload.github.com/wensia/kiln/tar.gz/a26c78f4c46ae47ff4679150222a299d8680f731:
+    resolution: {tarball: https://codeload.github.com/wensia/kiln/tar.gz/a26c78f4c46ae47ff4679150222a299d8680f731}
+    version: 3.11.4
 
   levn@0.4.1:
     resolution: {integrity: sha512-+bT2uH4E5LGE7h/n3evcS/sQlJXCpIp6ym8OWJ5eV6+67Dsql/LaaT7qJBAt2rzfoa/5QBGBhxDix1dMt2kQKQ==}
@@ -1817,6 +1818,7 @@ packages:
 
   object-assign@4.1.1:
     resolution: {integrity: sha512-rJgTQnkUnH1sFw8yT6VSU3zD3sWmu6sZhIseY8VX+GRu3P6F7Fu+JNDoXfklElbLJSnc3FUQHVe4cU5hj+BcUg==}
+    engines: {node: '>=0.10.0'}
 
   openapi-typescript@7.13.0:
     resolution: {integrity: sha512-EFP392gcqXS7ntPvbhBzbF8TyBA+baIYEm791Hy5YkjDYKTnk/Tn5OQeKm5BIZvJihpp8Zzr4hzx0Irde1LNGQ==}
@@ -3846,7 +3848,7 @@ snapshots:
     dependencies:
       json-buffer: 3.0.1
 
-  kiln@https://codeload.github.com/wensia/kiln/tar.gz/5167be340a18094ac59fa8cef17d09dcc337abd4: {}
+  kiln@https://codeload.github.com/wensia/kiln/tar.gz/a26c78f4c46ae47ff4679150222a299d8680f731: {}
 
   levn@0.4.1:
     dependencies:

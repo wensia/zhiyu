@@ -125,7 +125,7 @@ export function ImportListWorkspace() {
     setTopbarSlots({
       leading: <Button aria-label="返回流水" onClick={() => navigate("/app/transactions")} size="icon" variant="ghost"><ArrowLeftIcon /></Button>,
       title: "账单导入",
-      actions: <Button onClick={() => setUploadOpen(true)} variant="primary"><UploadIcon /><span className="button-label">选择文件</span></Button>,
+      actions: <Button aria-label="选择文件" onClick={() => setUploadOpen(true)} variant="primary"><UploadIcon /><span className="button-label">选择文件</span></Button>,
     })
     return () => setTopbarSlots(undefined)
   }, [navigate, setTopbarSlots])

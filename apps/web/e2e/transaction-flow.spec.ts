@@ -60,7 +60,7 @@ test("current transaction page: add, edit, delete and filter", async ({ page }, 
   await registerVerifyLogin(page)
   await page.goto("/app/transactions")
   await expect(page.locator(".topbar")).toContainText("流水")
-  await expect(page.locator(".tx-data-dock")).toContainText("当月暂无符合条件的账目")
+  await expect(page.locator(".tx-data-dock")).toContainText("本月没有流水")
   await expect(page.getByRole("button", { name: "导入账单" })).toBeVisible()
 
   await recordTransaction(page, "12.34", "餐饮", mobile)
