@@ -1,0 +1,18 @@
+{
+  "existing": [
+    {"id":"withdraw-bank","channel":"cmbc","amountCents":100000,"occurredAt":"2026-02-01 10:02:00","precision":"second"},
+    {"id":"refund-bank","channel":"cmbc","amountCents":50000,"occurredAt":"2026-02-02 10:01:00","precision":"second"},
+    {"id":"same-bank","channel":"cmbc","amountCents":20000,"occurredAt":"2026-02-03 10:01:00","precision":"second"},
+    {"id":"combo-bank","channel":"cmbc","amountCents":30000,"occurredAt":"2026-02-04 10:01:00","precision":"second"},
+    {"id":"amb-bank-1","channel":"cmb","amountCents":40000,"occurredAt":"2026-02-05 00:00:00","precision":"day"},
+    {"id":"amb-bank-2","channel":"cmb","amountCents":40000,"occurredAt":"2026-02-05 00:00:00","precision":"day"}
+  ],
+  "incoming": [
+    {"id":"withdraw-platform","amountCents":100100,"occurredAt":"2026-02-01 10:00:00","precision":"second","direction":"neutral","counterparty":"民生银行(1595)","status":"","sourceNote":"微信提现","payMethod":"民生银行储蓄卡(1595)"},
+    {"id":"refund-platform","amountCents":50000,"occurredAt":"2026-02-02 10:00:00","precision":"second","direction":"expense","counterparty":"虚构商户甲","status":"已退款","sourceNote":"","payMethod":"民生银行储蓄卡(1595)"},
+    {"id":"same-platform","amountCents":20000,"occurredAt":"2026-02-03 10:00:00","precision":"second","direction":"expense","counterparty":"虚构商户乙","status":"支付成功","sourceNote":"","payMethod":"民生银行储蓄卡(1595)"},
+    {"id":"combo-platform","amountCents":30000,"occurredAt":"2026-02-04 10:00:00","precision":"second","direction":"expense","counterparty":"虚构商户丙","status":"支付成功","sourceNote":"","payMethod":"民生银行储蓄卡(1595)&虚构福利金抵扣"},
+    {"id":"amb-platform-1","amountCents":40000,"occurredAt":"2026-02-05 09:00:00","precision":"second","direction":"expense","counterparty":"虚构商户丁","status":"支付成功","sourceNote":"","payMethod":"招商银行储蓄卡(4444)"},
+    {"id":"amb-platform-2","amountCents":40000,"occurredAt":"2026-02-05 18:00:00","precision":"second","direction":"expense","counterparty":"虚构商户戊","status":"支付成功","sourceNote":"","payMethod":"招商银行储蓄卡(4444)"}
+  ]
+}

@@ -20,15 +20,30 @@ path = "src/bin/api_key.rs"
 name = "zhiyu-passwd"
 path = "src/bin/passwd.rs"
 
+[[bin]]
+name = "zhiyu-recategorize"
+path = "src/bin/recategorize.rs"
+
+[[bin]]
+name = "zhiyu-renormalize"
+path = "src/bin/renormalize.rs"
+
+[[bin]]
+name = "zhiyu-reself"
+path = "src/bin/reself.rs"
+
 [dependencies]
 anyhow.workspace = true
 argon2.workspace = true
 async-trait.workspace = true
-axum.workspace = true
+axum = { workspace = true, features = ["multipart"] }
 base64.workspace = true
+calamine.workspace = true
 chrono.workspace = true
 chrono-tz.workspace = true
 dotenvy.workspace = true
+encoding_rs.workspace = true
+csv.workspace = true
 libsql.workspace = true
 rand.workspace = true
 regex.workspace = true

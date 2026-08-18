@@ -11,12 +11,13 @@ use uuid::Uuid;
 use crate::{
     AppState,
     auth::AuthUser,
-    debts::{idempotency_key, replay_idempotency, request_hash, store_idempotency, validate_note},
     domain::{
         AccountNameSource, AccountType, CreateLedgerAccountRequest, LedgerAccountView,
-        UpdateLedgerAccountRequest, VersionRequest, validate_email, validate_opening_balance,
+        UpdateLedgerAccountRequest, VersionRequest, validate_email, validate_note,
+        validate_opening_balance,
     },
     error::ApiError,
+    idempotency::{idempotency_key, replay_idempotency, request_hash, store_idempotency},
 };
 
 #[utoipa::path(get, path = "/api/v1/ledger-accounts", responses((status = 200, body = [LedgerAccountView])), security(("cookieAuth" = [])))]
@@ -474,6 +475,38 @@ fn normalize_optional_email(value: Option<&str>) -> Result<Option<String>, ApiEr
         return Ok(None);
     };
     Ok(Some(validate_email(value)?))
+}
+
+pub(crate) async fn ensure_active_ledger_account_if_present(
+    conn: &Connection,
+    user_id: &str,
+    id: Option<&str>,
+) -> Result<(), ApiError> {
+    if let Some(id) = id {
+        ensure_active_ledger_account(conn, user_id, id).await?;
+    }
+    Ok(())
+}
+
+pub(crate) async fn ensure_active_ledger_account(
+    conn: &Connection,
+    user_id: &str,
+    id: &str,
+) -> Result<(), ApiError> {
+    let mut rows = conn
+        .query(
+            "SELECT 1 FROM ledger_accounts WHERE id = ?1 AND user_id = ?2 AND archived_at IS NULL",
+            params![id, user_id],
+        )
+        .await?;
+    if rows.next().await?.is_none() {
+        return Err(ApiError::new(
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "account_unavailable",
+            "账户不存在或已归档",
+        ));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

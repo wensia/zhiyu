@@ -1,0 +1,35 @@
+{
+  "sourceChannel": "wechat",
+  "records": [
+    {
+      "case": "withdrawal",
+      "rowIndex": 1,
+      "externalId": "FAKE-NEUTRAL-WITHDRAWAL",
+      "category": "\u96f6\u94b1\u63d0\u73b0",
+      "counterparty": "\u865a\u6784\u94f6\u884c(0000)",
+      "product": "\u865a\u6784\u63d0\u73b0",
+      "payMethod": "\u865a\u6784\u94f6\u884c\u5361",
+      "amountCents": 1234
+    },
+    {
+      "case": "recharge",
+      "rowIndex": 2,
+      "externalId": "FAKE-NEUTRAL-RECHARGE",
+      "category": "\u96f6\u94b1\u5145\u503c",
+      "counterparty": "\u865a\u6784\u94f6\u884c(0000)",
+      "product": "\u865a\u6784\u5145\u503c",
+      "payMethod": "\u865a\u6784\u94f6\u884c\u5361",
+      "amountCents": 2345
+    },
+    {
+      "case": "other",
+      "rowIndex": 3,
+      "externalId": "FAKE-NEUTRAL-INVESTMENT",
+      "category": "\u8f6c\u5165\u7406\u8d22",
+      "counterparty": "\u865a\u6784\u94f6\u884c\u7406\u8d22",
+      "product": "\u865a\u6784\u7406\u8d22\u8f6c\u5165",
+      "payMethod": "\u865a\u6784\u94f6\u884c\u5361",
+      "amountCents": 3456
+    }
+  ]
+}

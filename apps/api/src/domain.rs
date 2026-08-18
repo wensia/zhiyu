@@ -238,6 +238,7 @@ pub struct RepaymentEventView {
     pub reversed: bool,
     pub created_at: String,
     pub account: Option<LedgerAccountBrief>,
+    pub transaction_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -249,6 +250,7 @@ pub struct DebtAdditionEventView {
     pub note: String,
     pub created_at: String,
     pub account: Option<LedgerAccountBrief>,
+    pub transaction_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
@@ -271,6 +273,7 @@ pub struct DebtView {
     pub updated_at: String,
     pub account: Option<LedgerAccountBrief>,
     pub origin_kind: DebtOriginKind,
+    pub transaction_id: Option<String>,
     pub repayments: Vec<RepaymentEventView>,
     pub additions: Vec<DebtAdditionEventView>,
 }
@@ -317,6 +320,7 @@ pub struct CreateDebtRequest {
     pub due_on: Option<String>,
     #[serde(default)]
     pub note: String,
+    pub transaction_id: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -332,6 +336,8 @@ pub struct UpdateDebtRequest {
     pub due_on: Option<String>,
     #[serde(default)]
     pub note: String,
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    pub transaction_id: Option<Option<String>>,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -344,7 +350,8 @@ pub struct VersionRequest {
 pub struct CreateRepaymentRequest {
     pub amount_cents: i64,
     pub effective_on: String,
-    pub account_id: String,
+    pub account_id: Option<String>,
+    pub transaction_id: Option<String>,
     #[serde(default)]
     pub note: String,
 }
@@ -354,7 +361,8 @@ pub struct CreateRepaymentRequest {
 pub struct CreateDebtAdditionRequest {
     pub amount_cents: i64,
     pub effective_on: String,
-    pub account_id: String,
+    pub account_id: Option<String>,
+    pub transaction_id: Option<String>,
     #[serde(default)]
     pub note: String,
 }
@@ -367,6 +375,8 @@ pub struct UpdateDebtAdditionRequest {
     pub effective_on: String,
     pub account_id: Option<String>,
     pub movement_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    pub transaction_id: Option<Option<String>>,
     #[serde(default)]
     pub note: String,
 }
@@ -379,6 +389,8 @@ pub struct UpdateRepaymentRequest {
     pub effective_on: String,
     pub account_id: Option<String>,
     pub movement_type: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable_string")]
+    pub transaction_id: Option<Option<String>>,
     #[serde(default)]
     pub note: String,
 }
@@ -471,6 +483,7 @@ pub struct DashboardSummary {
 pub enum TransactionKind {
     Income,
     Expense,
+    Transfer,
 }
 
 impl TransactionKind {
@@ -478,6 +491,7 @@ impl TransactionKind {
         match self {
             Self::Income => "income",
             Self::Expense => "expense",
+            Self::Transfer => "transfer",
         }
     }
 
@@ -485,7 +499,25 @@ impl TransactionKind {
         match value {
             "income" => Ok(Self::Income),
             "expense" => Ok(Self::Expense),
+            "transfer" => Ok(Self::Transfer),
             _ => Err(ApiError::internal("transaction kind is invalid")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, ToSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum PnlScope {
+    Counted,
+    Excluded,
+}
+
+impl PnlScope {
+    pub fn from_db(value: &str) -> Result<Self, ApiError> {
+        match value {
+            "counted" => Ok(Self::Counted),
+            "excluded" => Ok(Self::Excluded),
+            _ => Err(ApiError::internal("transaction pnl scope is invalid")),
         }
     }
 }
@@ -497,13 +529,62 @@ pub struct LedgerTransactionView {
     pub kind: TransactionKind,
     pub amount_cents: i64,
     pub occurred_on: String,
+    pub occurred_at: Option<String>,
+    pub occurred_at_precision: String,
+    pub currency: String,
     pub category: String,
+    pub category_id: Option<String>,
+    #[schema(required = false)]
+    pub category_source: String,
+    pub category_rule_id: Option<String>,
+    pub category_rule_name: Option<String>,
+    pub payee_name: String,
+    pub payee_key: String,
+    pub description: String,
     pub account: Option<LedgerAccountBrief>,
+    pub transfer_from_account: Option<LedgerAccountBrief>,
+    pub transfer_to_account: Option<LedgerAccountBrief>,
     pub note: String,
     pub archived: bool,
     pub version: i64,
     pub created_at: String,
     pub updated_at: String,
+    pub pnl_scope: PnlScope,
+    pub created_by: String,
+    pub links: Vec<TransactionLinkView>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionLinkView {
+    pub plugin_id: String,
+    pub kind: String,
+    pub ref_id: String,
+    pub label: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionLinkCandidate {
+    pub id: String,
+    pub kind: TransactionKind,
+    pub amount_cents: i64,
+    pub occurred_on: String,
+    pub note: String,
+    pub account: Option<LedgerAccountBrief>,
+}
+
+#[derive(Debug, Deserialize, IntoParams)]
+#[serde(rename_all = "camelCase")]
+pub struct TransactionLinkCandidatesQuery {
+    pub amount_cents: Option<i64>,
+}
+
+fn deserialize_nullable_string<'de, D>(deserializer: D) -> Result<Option<Option<String>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer).map(Some)
 }
 
 #[derive(Debug, Serialize, ToSchema)]
@@ -522,6 +603,8 @@ pub struct TransactionListQuery {
     pub kind: Option<String>,
     pub category: Option<String>,
     pub account_id: Option<String>,
+    #[param(max_length = 100)]
+    pub q: Option<String>,
     pub page: Option<u32>,
     pub page_size: Option<u32>,
 }
@@ -570,6 +653,8 @@ pub struct CreateTransactionRequest {
     #[serde(default)]
     pub category: String,
     pub account_id: Option<String>,
+    pub transfer_from_account_id: Option<String>,
+    pub transfer_to_account_id: Option<String>,
     #[serde(default)]
     pub note: String,
 }
@@ -583,9 +668,149 @@ pub struct UpdateTransactionRequest {
     pub occurred_on: String,
     #[serde(default)]
     pub category: String,
+    pub category_id: Option<String>,
     pub account_id: Option<String>,
+    pub transfer_from_account_id: Option<String>,
+    pub transfer_to_account_id: Option<String>,
     #[serde(default)]
     pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryView {
+    pub id: String,
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub kind: String,
+    pub sort_order: i64,
+    pub archived: bool,
+    pub version: i64,
+    #[schema(no_recursion)]
+    pub children: Vec<CategoryView>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCategoryRequest {
+    pub parent_id: Option<String>,
+    pub name: String,
+    pub kind: String,
+    #[serde(default)]
+    pub sort_order: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCategoryRequest {
+    pub version: i64,
+    pub name: Option<String>,
+    pub sort_order: Option<i64>,
+    pub archived: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct SelfTransferAliasView {
+    pub id: String,
+    pub alias: String,
+    pub normalized_alias: String,
+    pub note: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateSelfTransferAliasRequest {
+    pub alias: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DeleteSelfTransferAliasRequest {
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRuleConditionView {
+    pub id: String,
+    pub match_field: String,
+    pub match_kind: String,
+    pub match_value: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRuleView {
+    pub id: String,
+    pub priority: i64,
+    pub enabled: bool,
+    pub source_channel: String,
+    pub category_id: String,
+    pub note: String,
+    pub conditions: Vec<CategoryRuleConditionView>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryRuleConditionInput {
+    pub match_field: String,
+    pub match_kind: String,
+    pub match_value: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateCategoryRuleRequest {
+    #[serde(default = "default_category_rule_priority")]
+    pub priority: i64,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub source_channel: String,
+    pub category_id: String,
+    #[serde(default)]
+    pub note: String,
+    pub conditions: Vec<CategoryRuleConditionInput>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCategoryRuleRequest {
+    pub priority: Option<i64>,
+    pub enabled: Option<bool>,
+    pub source_channel: Option<String>,
+    pub category_id: Option<String>,
+    pub note: Option<String>,
+    pub conditions: Option<Vec<CategoryRuleConditionInput>>,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RecategorizeResponse {
+    pub eligible: i64,
+    pub matched: i64,
+    pub changed: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct RevertCategoryRuleResponse {
+    pub id: String,
+    pub reverted_count: i64,
+}
+
+fn default_category_rule_priority() -> i64 {
+    100
+}
+
+fn default_true() -> bool {
+    true
 }
 
 pub fn validate_email(email: &str) -> Result<String, ApiError> {
@@ -623,6 +848,63 @@ pub fn validate_amount(value: i64) -> Result<(), ApiError> {
         return Err(ApiError::validation("金额必须大于 0 且在安全范围内"));
     }
     Ok(())
+}
+
+pub(crate) fn validate_note(value: &str) -> Result<(), ApiError> {
+    if value.chars().count() > 2_000 {
+        return Err(ApiError::validation("备注不能超过 2000 个字符"));
+    }
+    Ok(())
+}
+
+/// Conservatively normalizes a counterparty name without changing the source value.
+pub fn normalize_counterparty(source_channel: &str, value: &str) -> String {
+    match source_channel {
+        "alipay" | "wechat" | "manual" => normalize_width(value.trim()),
+        "cmbc" => value.to_owned(),
+        "cmb" => normalize_cmb_counterparty(value),
+        _ => normalize_width(value.trim()),
+    }
+}
+
+fn normalize_width(value: &str) -> String {
+    value
+        .chars()
+        .map(|character| match character {
+            '\u{3000}' => ' ',
+            '\u{ff01}'..='\u{ff5e}' => char::from_u32(character as u32 - 0xfee0)
+                .expect("full-width ASCII mapping must be valid"),
+            _ => character,
+        })
+        .collect()
+}
+
+fn normalize_cmb_counterparty(value: &str) -> String {
+    let trimmed = value.trim();
+    let bytes = trimmed.as_bytes();
+    let mut suffix_start = bytes.len();
+    while suffix_start > 0 && bytes[suffix_start - 1].is_ascii_alphanumeric() {
+        suffix_start -= 1;
+    }
+    let suffix = &trimmed[suffix_start..];
+    let remainder = trimmed[..suffix_start].trim_end();
+    let remainder_non_whitespace_len = remainder
+        .chars()
+        .filter(|character| !character.is_whitespace())
+        .count();
+    let cuts_at_connector = remainder
+        .chars()
+        .next_back()
+        .is_some_and(|character| matches!(character, '_' | '-' | '·' | '—' | '/'));
+    if suffix.len() >= 6
+        && suffix.bytes().any(|byte| byte.is_ascii_digit())
+        && remainder_non_whitespace_len >= 2
+        && !cuts_at_connector
+    {
+        remainder.to_owned()
+    } else {
+        trimmed.to_owned()
+    }
 }
 
 pub fn validate_category(value: &str) -> Result<String, ApiError> {

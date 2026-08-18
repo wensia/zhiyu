@@ -1,13 +1,21 @@
 pub mod accounts;
 pub mod auth;
 pub mod backup;
+pub mod categories;
+pub mod categorize;
 pub mod config;
+pub mod dashboards;
 pub mod db;
 pub mod debts;
 pub mod domain;
 pub mod email;
 pub mod error;
+mod idempotency;
+pub mod imports;
+pub mod lifecycle;
+pub mod plugins;
 pub mod rate_limit;
+pub mod self_transfer;
 pub mod transactions;
 
 use std::sync::Arc;
@@ -15,11 +23,11 @@ use std::sync::Arc;
 use axum::{
     Json, Router,
     body::Body,
-    extract::{Request, State},
-    http::{HeaderValue, Method, StatusCode, header},
+    extract::{DefaultBodyLimit, Request, State},
+    http::{HeaderValue, Method, StatusCode, Uri, header},
     middleware::{self, Next},
     response::{IntoResponse, Response},
-    routing::{get, patch, post},
+    routing::{get, patch, post, put},
 };
 use libsql::Database;
 use serde_json::json;
@@ -80,7 +88,7 @@ impl Modify for SecurityAddon {
         auth::register, auth::verify_email, auth::resend_verification, auth::login,
         auth::session_from_key, auth::create_handoff_ticket,
         auth::logout, auth::me, auth::forgot_password, auth::reset_password,
-        debts::list_debts, debts::get_debt, debts::create_debt, debts::update_debt,
+        debts::list_debts, debts::get_debt, debts::list_link_candidates, debts::create_debt, debts::update_debt,
         debts::archive_debt, debts::restore_debt, debts::delete_debt,
         debts::create_repayment, debts::create_debt_addition, debts::update_debt_addition,
         debts::update_repayment, debts::reverse_repayment, debts::list_counterparties,
@@ -90,7 +98,24 @@ impl Modify for SecurityAddon {
         transactions::list_transactions, transactions::create_transaction, transactions::update_transaction,
         transactions::delete_transaction, transactions::restore_transaction, transactions::transaction_summary,
         transactions::list_transaction_categories,
+        categories::list_categories, categories::create_category, categories::update_category,
+        categories::delete_category, categories::list_category_rules,
+        categories::create_category_rule, categories::update_category_rule,
+        categories::delete_category_rule, categories::recategorize, categories::revert_category_rule,
         backup::list_backups, backup::backup_status, backup::download_backup
+        ,imports::list_imports, imports::get_import, imports::upload_import, imports::commit_import,
+        imports::discard_import, imports::bind_import_account, imports::upsert_import_account_mapping,
+        imports::duplicates::list_duplicate_suspicions, imports::duplicates::update_duplicate_suspicion,
+        imports::duplicates::confirm_duplicate_suspicion,
+        imports::duplicates::dismiss_duplicate_suspicion,
+        imports::duplicates::revert_duplicate_suspicion,
+        self_transfer::list_self_transfer_aliases, self_transfer::create_self_transfer_alias,
+        self_transfer::delete_self_transfer_alias,
+        plugins::list_plugins, plugins::update_plugin
+        ,dashboards::list_dashboards, dashboards::create_dashboard,
+        dashboards::create_default_dashboard, dashboards::update_dashboard,
+        dashboards::delete_dashboard, dashboards::replace_dashboard_widgets,
+        dashboards::list_widget_types, dashboards::statistics_aggregate
     ),
     components(schemas(
         domain::UserView, auth::SessionFromKeyResponse, auth::SessionCookieView,
@@ -106,10 +131,38 @@ impl Modify for SecurityAddon {
         domain::AccountType, domain::AccountNameSource, domain::LedgerAccountBrief, domain::LedgerAccountView,
         domain::CreateLedgerAccountRequest, domain::UpdateLedgerAccountRequest,
         domain::DashboardSummary, error::ErrorBody,
-        domain::TransactionKind, domain::LedgerTransactionView, domain::TransactionListResponse,
+        domain::TransactionKind, domain::PnlScope, domain::TransactionLinkView, domain::TransactionLinkCandidate, domain::LedgerTransactionView, domain::TransactionListResponse,
         domain::CreateTransactionRequest, domain::UpdateTransactionRequest,
+        domain::CategoryView, domain::CreateCategoryRequest, domain::UpdateCategoryRequest,
+        domain::CategoryRuleConditionView, domain::CategoryRuleView,
+        domain::CategoryRuleConditionInput, domain::CreateCategoryRuleRequest,
+        domain::UpdateCategoryRuleRequest, domain::RecategorizeResponse,
+        domain::RevertCategoryRuleResponse,
         domain::TransactionDaySummary, domain::TransactionCategorySummary, domain::TransactionMonthSummary,
-        backup::BackupListItem, backup::BackupRuntimeStatus
+        backup::BackupListItem, backup::BackupRuntimeStatus,
+        imports::ImportListResponse, imports::ImportBatchListItem, imports::ImportDetailResponse,
+        imports::ImportRecordView, imports::ImportSummary, imports::ImportSummaryItem,
+        imports::UnknownIssue, imports::CommitImportResponse,
+        imports::DiscardImportResponse, imports::CommitImportRequest,
+        imports::BindImportAccountRequest, imports::BindImportAccountResponse
+        ,imports::UpsertImportAccountMappingRequest, imports::ImportAccountMappingResponse,
+        imports::ImportPayMethodSummary,
+        imports::duplicates::DuplicateSuspicionListResponse,
+        imports::duplicates::DuplicateSuspicionClusterView,
+        imports::duplicates::DuplicateSuspicionView,
+        imports::duplicates::DuplicateTransactionView,
+        imports::duplicates::UpdateDuplicateSuspicionRequest,
+        imports::duplicates::DuplicateSuspicionActionResponse,
+        imports::duplicates::DuplicateActionTransactionView,
+        imports::duplicates::TransactionEventView
+        ,domain::SelfTransferAliasView, domain::CreateSelfTransferAliasRequest,
+        domain::DeleteSelfTransferAliasRequest,
+        plugins::PluginView, plugins::UpdatePluginRequest, plugins::UpdatePluginResponse,
+        plugins::WidgetDefinition,
+        dashboards::DashboardWidgetView, dashboards::DashboardView,
+        dashboards::CreateDashboardRequest, dashboards::UpdateDashboardRequest,
+        dashboards::DashboardWidgetInput, dashboards::PluginWidgetTypes,
+        dashboards::WidgetTypesResponse, dashboards::AggregateItem
     )),
     modifiers(&SecurityAddon),
     tags((name = "知余", description = "个人债务管理 API"))
@@ -139,6 +192,10 @@ pub fn app(state: AppState) -> Router {
         .route("/debts/{id}/restore", post(debts::restore_debt))
         .route("/debts/{id}/repayments", post(debts::create_repayment))
         .route("/debts/{id}/additions", post(debts::create_debt_addition))
+        .route(
+            "/debts/{id}/link-candidates",
+            get(debts::list_link_candidates),
+        )
         .route("/debt-additions/{id}", patch(debts::update_debt_addition))
         .route("/repayments/{id}", patch(debts::update_repayment))
         .route("/repayments/{id}/reversals", post(debts::reverse_repayment))
@@ -164,6 +221,32 @@ pub fn app(state: AppState) -> Router {
         )
         .route("/counterparties/{id}", patch(debts::update_counterparty))
         .route("/dashboard/summary", get(debts::dashboard_summary))
+        .route("/plugins", get(plugins::list_plugins))
+        .route("/plugins/{id}", patch(plugins::update_plugin))
+        .route(
+            "/dashboards",
+            get(dashboards::list_dashboards).post(dashboards::create_dashboard),
+        )
+        .route(
+            "/dashboards/default",
+            post(dashboards::create_default_dashboard),
+        )
+        .route(
+            "/dashboards/widget-types",
+            get(dashboards::list_widget_types),
+        )
+        .route(
+            "/dashboards/{id}",
+            patch(dashboards::update_dashboard).delete(dashboards::delete_dashboard),
+        )
+        .route(
+            "/dashboards/{id}/widgets",
+            put(dashboards::replace_dashboard_widgets),
+        )
+        .route(
+            "/statistics/aggregate",
+            get(dashboards::statistics_aggregate),
+        )
         .route(
             "/transactions",
             get(transactions::list_transactions).post(transactions::create_transaction),
@@ -184,9 +267,78 @@ pub fn app(state: AppState) -> Router {
             "/transactions/{id}/restore",
             post(transactions::restore_transaction),
         )
+        .route(
+            "/categories",
+            get(categories::list_categories).post(categories::create_category),
+        )
+        .route("/categories/recategorize", post(categories::recategorize))
+        .route(
+            "/categories/rules/{id}/revert",
+            post(categories::revert_category_rule),
+        )
+        .route(
+            "/categories/{id}",
+            patch(categories::update_category).delete(categories::delete_category),
+        )
+        .route(
+            "/category-rules",
+            get(categories::list_category_rules).post(categories::create_category_rule),
+        )
+        .route(
+            "/category-rules/{id}",
+            patch(categories::update_category_rule).delete(categories::delete_category_rule),
+        )
         .route("/backups", get(backup::list_backups))
         .route("/backups/status", get(backup::backup_status))
-        .route("/backups/{id}", get(backup::download_backup));
+        .route("/backups/{id}", get(backup::download_backup))
+        .route(
+            "/self-transfer-aliases",
+            get(self_transfer::list_self_transfer_aliases)
+                .post(self_transfer::create_self_transfer_alias)
+                .delete(self_transfer::delete_self_transfer_alias),
+        )
+        .route(
+            "/imports",
+            get(imports::list_imports)
+                .post(imports::upload_import)
+                .layer(DefaultBodyLimit::max(11 * 1024 * 1024)),
+        )
+        .route(
+            "/imports/{id}",
+            get(imports::get_import).delete(imports::discard_import),
+        )
+        .route(
+            "/imports/mappings",
+            axum::routing::post(imports::upsert_import_account_mapping),
+        )
+        .route(
+            "/imports/{id}/commit",
+            axum::routing::post(imports::commit_import),
+        )
+        .route(
+            "/imports/{id}/account",
+            axum::routing::post(imports::bind_import_account),
+        )
+        .route(
+            "/duplicate-suspicions",
+            get(imports::duplicates::list_duplicate_suspicions),
+        )
+        .route(
+            "/duplicate-suspicions/{id}",
+            patch(imports::duplicates::update_duplicate_suspicion),
+        )
+        .route(
+            "/duplicate-suspicions/{id}/confirm",
+            post(imports::duplicates::confirm_duplicate_suspicion),
+        )
+        .route(
+            "/duplicate-suspicions/{id}/dismiss",
+            post(imports::duplicates::dismiss_duplicate_suspicion),
+        )
+        .route(
+            "/duplicate-suspicions/{id}/revert",
+            post(imports::duplicates::revert_duplicate_suspicion),
+        );
 
     // 静态资源必须显式声明缓存策略。tower-http 默认什么都不设，客户端于是退回
     // 启发式缓存——按 (now - last_modified) * 10% 自行推算过期时间。实测中 WKWebView
@@ -228,14 +380,49 @@ pub fn app(state: AppState) -> Router {
             get(|| async { Json(ApiDoc::openapi()) }),
         )
         .nest("/api/v1", api)
+        .nest(
+            "/api",
+            Router::new()
+                .fallback(|| async { crate::error::ApiError::not_found("API 端点不存在") }),
+        )
         .nest_service("/assets", hashed_assets)
         .fallback_service(static_files)
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            plugin_access_guard,
+        ))
         .layer(middleware::from_fn_with_state(state.clone(), csrf_guard))
         .layer(PropagateRequestIdLayer::x_request_id())
         .layer(SetRequestIdLayer::x_request_id(MakeRequestUuid))
         .layer(TraceLayer::new_for_http())
         .layer(CatchPanicLayer::new())
         .with_state(state)
+}
+
+async fn plugin_access_guard(
+    State(state): State<AppState>,
+    request: Request<Body>,
+    next: Next,
+) -> Response {
+    let Some(plugin) = plugins::plugin_for_api_path(request.uri().path()) else {
+        return next.run(request).await;
+    };
+    let Some(context) = request.extensions().get::<auth::AuthContext>() else {
+        return next.run(request).await;
+    };
+    let conn = match state.connection().await {
+        Ok(conn) => conn,
+        Err(error) => return error.into_response(),
+    };
+    match plugins::is_enabled(&conn, &context.user.id, plugin.id).await {
+        Ok(true) => next.run(request).await,
+        Ok(false) => crate::error::ApiError::conflict(
+            "plugin_disabled",
+            format!("{}插件已关闭", plugin.name),
+        )
+        .into_response(),
+        Err(error) => error.into_response(),
+    }
 }
 
 async fn readiness(State(state): State<AppState>) -> Response {
@@ -322,13 +509,19 @@ async fn csrf_guard(
         .as_ref()
         .is_some_and(|context| context.mechanism == auth::AuthMechanism::Session);
     if unsafe_method && uses_session {
-        let origin_matches = request
+        let request_origin = request
             .headers()
             .get(header::ORIGIN)
-            .and_then(|value| value.to_str().ok())
-            .is_some_and(|origin| origin.trim_end_matches('/') == state.config.public_base_url);
-        if !origin_matches {
-            return crate::error::ApiError::forbidden("请求来源校验失败").into_response();
+            .and_then(|value| value.to_str().ok());
+        if !request_origin
+            .is_some_and(|origin| origins_match(origin, &state.config.public_base_url))
+        {
+            let request_origin = request_origin.unwrap_or("（缺失或非法）");
+            return crate::error::ApiError::forbidden(format!(
+                "请求来源 {request_origin} 与服务端配置的 {} 不一致",
+                state.config.public_base_url
+            ))
+            .into_response();
         }
     }
     if let Some(context) = auth_context {
@@ -347,4 +540,48 @@ async fn csrf_guard(
         response.headers_mut().insert(header::SET_COOKIE, value);
     }
     response
+}
+
+fn origins_match(left: &str, right: &str) -> bool {
+    let Some((left_scheme, left_host, left_port)) = parse_origin(left) else {
+        return false;
+    };
+    let Some((right_scheme, right_host, right_port)) = parse_origin(right) else {
+        return false;
+    };
+
+    left_scheme == right_scheme
+        && left_port == right_port
+        && (left_host == right_host
+            || (is_loopback_host(&left_host) && is_loopback_host(&right_host)))
+}
+
+fn parse_origin(value: &str) -> Option<(String, String, u16)> {
+    let uri = value.parse::<Uri>().ok()?;
+    let scheme = uri.scheme_str()?.to_ascii_lowercase();
+    let authority = uri.authority()?;
+    if authority.as_str().contains('@')
+        || uri
+            .path_and_query()
+            .is_some_and(|path_and_query| path_and_query.as_str() != "/")
+    {
+        return None;
+    }
+
+    let port = authority.port_u16().or(match scheme.as_str() {
+        "http" => Some(80),
+        "https" => Some(443),
+        _ => None,
+    })?;
+    let host = authority
+        .host()
+        .strip_prefix('[')
+        .and_then(|host| host.strip_suffix(']'))
+        .unwrap_or_else(|| authority.host())
+        .to_ascii_lowercase();
+    Some((scheme, host, port))
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    matches!(host, "localhost" | "127.0.0.1" | "::1")
 }

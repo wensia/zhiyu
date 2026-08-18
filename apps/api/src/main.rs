@@ -3,7 +3,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use tracing_subscriber::EnvFilter;
 use zhiyu_api::{
-    AppState, app, config::Config, db, email::DevFileEmailSender, rate_limit::RateLimiter,
+    AppState, app, config::Config, db, email::DevFileEmailSender, plugins, rate_limit::RateLimiter,
 };
 
 #[tokio::main]
@@ -25,6 +25,16 @@ async fn main() -> Result<()> {
     }
 
     let database = db::connect(&config).await?;
+    let reconcile_conn = database.connect()?;
+    reconcile_conn
+        .execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
+        .await?;
+    match plugins::run_startup_self_checks(&reconcile_conn).await {
+        Ok(repaired) => tracing::info!(repaired, "plugin startup self-checks complete"),
+        Err(error) => {
+            tracing::error!(?error, "plugin startup self-checks failed");
+        }
+    }
     let address = config.bind_addr;
     let email = DevFileEmailSender::new(config.dev_mail_dir.clone());
     let state = AppState {

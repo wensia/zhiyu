@@ -21,6 +21,38 @@ const DEBT_ORIGIN_KIND_MIGRATION: &str = include_str!("../migrations/0008_debt_o
 const TRANSACTIONS_MIGRATION: &str = include_str!("../migrations/0009_transactions.sql");
 const API_KEYS_MIGRATION: &str = include_str!("../migrations/0010_api_keys.sql");
 const HANDOFF_TICKETS_MIGRATION: &str = include_str!("../migrations/0011_handoff_tickets.sql");
+const TRANSACTIONS_V2_MIGRATION: &str = include_str!("../migrations/0013_transactions_v2.sql");
+const BILL_IMPORTS_MIGRATION: &str = include_str!("../migrations/0014_bill_imports.sql");
+const IMPORT_ACCOUNT_MAPPINGS_MIGRATION: &str =
+    include_str!("../migrations/0015_import_account_mappings.sql");
+const DEBT_TRANSACTION_LINKS_MIGRATION: &str =
+    include_str!("../migrations/0016_debt_transaction_links.sql");
+const DUPLICATE_SUSPICIONS_MIGRATION: &str =
+    include_str!("../migrations/0017_duplicate_suspicions.sql");
+const TRANSACTION_EVENTS_MIGRATION: &str =
+    include_str!("../migrations/0018_transaction_events.sql");
+const DUPLICATE_SUSPICION_CLUSTERS_MIGRATION: &str =
+    include_str!("../migrations/0019_duplicate_suspicion_clusters.sql");
+const DUPLICATE_CONFIRMATION_ACTIONS_MIGRATION: &str =
+    include_str!("../migrations/0020_duplicate_confirmation_actions.sql");
+const CATEGORIES_MIGRATION: &str = include_str!("../migrations/0021_categories.sql");
+const SELF_TRANSFER_ALIASES_MIGRATION: &str =
+    include_str!("../migrations/0022_self_transfer_aliases.sql");
+const DROP_BILL_INBOX_MIGRATION: &str = include_str!("../migrations/0023_drop_bill_inbox.sql");
+const DEBT_CASH_MOVEMENTS_TO_TRANSACTIONS_MIGRATION: &str =
+    include_str!("../migrations/0024_debt_cash_movements_to_transactions.sql");
+const TRANSACTION_PNL_SCOPE_MIGRATION: &str =
+    include_str!("../migrations/0025_transaction_pnl_scope.sql");
+const TRANSACTION_LINKS_MIGRATION: &str = include_str!("../migrations/0026_transaction_links.sql");
+const TRANSACTION_CREATED_BY_AND_MOVEMENTS_VIEW_MIGRATION: &str =
+    include_str!("../migrations/0027_transaction_created_by_and_movements_view.sql");
+const TRANSACTION_CATEGORY_RULE_TRACE_MIGRATION: &str =
+    include_str!("../migrations/0028_transaction_category_rule_trace.sql");
+const IMPORT_TRANSACTION_LINKS_MIGRATION: &str =
+    include_str!("../migrations/0029_import_transaction_links.sql");
+const PLUGIN_SETTINGS_MIGRATION: &str = include_str!("../migrations/0030_plugin_settings.sql");
+const DASHBOARDS_MIGRATION: &str = include_str!("../migrations/0031_dashboards.sql");
+// v12 留给生产 JMAP 暂存迁移；它建的三张表已由 v23 删除。
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, INITIAL_MIGRATION),
     (2, DEBT_ADDITIONS_MIGRATION),
@@ -33,6 +65,25 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (9, TRANSACTIONS_MIGRATION),
     (10, API_KEYS_MIGRATION),
     (11, HANDOFF_TICKETS_MIGRATION),
+    (13, TRANSACTIONS_V2_MIGRATION),
+    (14, BILL_IMPORTS_MIGRATION),
+    (15, IMPORT_ACCOUNT_MAPPINGS_MIGRATION),
+    (16, DEBT_TRANSACTION_LINKS_MIGRATION),
+    (17, DUPLICATE_SUSPICIONS_MIGRATION),
+    (18, TRANSACTION_EVENTS_MIGRATION),
+    (19, DUPLICATE_SUSPICION_CLUSTERS_MIGRATION),
+    (20, DUPLICATE_CONFIRMATION_ACTIONS_MIGRATION),
+    (21, CATEGORIES_MIGRATION),
+    (22, SELF_TRANSFER_ALIASES_MIGRATION),
+    (23, DROP_BILL_INBOX_MIGRATION),
+    (24, DEBT_CASH_MOVEMENTS_TO_TRANSACTIONS_MIGRATION),
+    (25, TRANSACTION_PNL_SCOPE_MIGRATION),
+    (26, TRANSACTION_LINKS_MIGRATION),
+    (27, TRANSACTION_CREATED_BY_AND_MOVEMENTS_VIEW_MIGRATION),
+    (28, TRANSACTION_CATEGORY_RULE_TRACE_MIGRATION),
+    (29, IMPORT_TRANSACTION_LINKS_MIGRATION),
+    (30, PLUGIN_SETTINGS_MIGRATION),
+    (31, DASHBOARDS_MIGRATION),
 ];
 
 /// 返回当前程序认识的全部迁移版本，供离线恢复判断备份是否可安全打开。
@@ -69,6 +120,15 @@ pub async fn connect(config: &Config) -> Result<Database> {
 }
 
 pub async fn migrate(db: &Database) -> Result<()> {
+    migrate_up_to(db, i64::MAX).await
+}
+
+/// Applies known migrations through `maximum_version` (inclusive).
+///
+/// This is primarily useful for migration reconciliation tests and offline drills. The production
+/// connection path continues to call [`migrate`], which always applies every known migration.
+#[doc(hidden)]
+pub async fn migrate_up_to(db: &Database, maximum_version: i64) -> Result<()> {
     let conn = db.connect()?;
     conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;")
         .await?;
@@ -77,7 +137,10 @@ pub async fn migrate(db: &Database) -> Result<()> {
         (),
     )
     .await?;
-    for (version, sql) in MIGRATIONS {
+    for (version, sql) in MIGRATIONS
+        .iter()
+        .filter(|(version, _)| *version <= maximum_version)
+    {
         let mut rows = conn
             .query(
                 "SELECT version FROM schema_migrations WHERE version = ?1",
@@ -95,6 +158,25 @@ pub async fn migrate(db: &Database) -> Result<()> {
 
 async fn apply_migration(conn: &libsql::Connection, version: i64, sql: &str) -> Result<()> {
     let tx = conn.transaction().await?;
+    if version == 27 {
+        let mut rows = tx
+            .query(
+                "SELECT COUNT(*) FROM debts d WHERE d.origin_kind = 'cash_movement' AND d.account_id IS NOT NULL AND d.transaction_id IS NULL AND d.principal_cents - COALESCE((SELECT SUM(a.amount_cents) FROM debt_addition_events a WHERE a.debt_id = d.id), 0) < 0",
+                (),
+            )
+            .await?;
+        let invalid_count = rows
+            .next()
+            .await?
+            .context("migration v27 debt guard returned no row")?
+            .get::<i64>(0)?;
+        drop(rows);
+        if invalid_count > 0 {
+            anyhow::bail!(
+                "migration v27 refused: found {invalid_count} cash-movement debts whose additions exceed principal; 这些债务的追加借款之和超过本金，请先在债务页修正后重启"
+            );
+        }
+    }
     for statement in split_sql(sql) {
         tx.execute(&statement, ()).await.with_context(|| {
             format!(
@@ -141,7 +223,8 @@ mod tests {
     use super::{
         DEBT_ADDITIONS_MIGRATION, INITIAL_MIGRATION, LEDGER_ACCOUNT_DETAILS_MIGRATION,
         LEDGER_ACCOUNT_NAME_SOURCE_MIGRATION, LEDGER_ACCOUNT_TYPES_MIGRATION,
-        LEDGER_ACCOUNTS_MIGRATION, MIGRATIONS, apply_migration, migrate, split_sql,
+        LEDGER_ACCOUNTS_MIGRATION, MIGRATIONS, apply_migration, known_migration_versions, migrate,
+        split_sql,
     };
 
     #[test]
@@ -213,7 +296,13 @@ mod tests {
         while let Some(row) = versions.next().await.unwrap() {
             applied.push(row.get::<i64>(0).unwrap());
         }
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(
+            applied,
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+                25, 26, 27, 28, 29, 30, 31
+            ]
+        );
         let mut tables = conn
             .query(
                 "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'debt_addition_events'",
@@ -754,7 +843,13 @@ mod tests {
         while let Some(row) = versions.next().await.unwrap() {
             applied.push(row.get::<i64>(0).unwrap());
         }
-        assert_eq!(applied, vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+        assert_eq!(
+            applied,
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+                25, 26, 27, 28, 29, 30, 31
+            ]
+        );
 
         for (kind, name) in [
             ("table", "ledger_transactions"),
@@ -855,6 +950,315 @@ mod tests {
             )
             .await
             .unwrap();
+        assert!(rows.next().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn existing_v11_database_is_upgraded_to_v12_with_safe_provenance_defaults() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(root.path().join("bill-import-upgrade.db"))
+            .build()
+            .await
+            .unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute(
+            "CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, applied_at TEXT NOT NULL)",
+            (),
+        )
+        .await
+        .unwrap();
+        for (version, sql) in MIGRATIONS.iter().take(11) {
+            apply_migration(&conn, *version, sql).await.unwrap();
+        }
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, created_at, updated_at) VALUES ('u1', 'import@example.com', 'hash', 'Asia/Shanghai', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, created_at, updated_at) VALUES ('old', 'u1', 'expense', 100, '2026-08-10', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        migrate(&db).await.unwrap();
+
+        assert_eq!(
+            known_migration_versions(),
+            vec![
+                1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24,
+                25, 26, 27, 28, 29, 30, 31
+            ]
+        );
+        let mut rows = conn
+            .query(
+                "SELECT source_channel, external_id, import_batch_id FROM ledger_transactions WHERE id = 'old'",
+                (),
+            )
+            .await
+            .unwrap();
+        let row = rows.next().await.unwrap().unwrap();
+        assert_eq!(row.get::<String>(0).unwrap(), "");
+        assert_eq!(row.get::<String>(1).unwrap(), "");
+        assert!(row.get::<Option<String>>(2).unwrap().is_none());
+
+        let mut foreign_key_violations = conn.query("PRAGMA foreign_key_check", ()).await.unwrap();
+        assert!(foreign_key_violations.next().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn transaction_events_migration_adds_event_and_normalization_schema() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(root.path().join("transaction-events.db"))
+            .build()
+            .await
+            .unwrap();
+        migrate(&db).await.unwrap();
+        let conn = db.connect().unwrap();
+
+        let mut tables = conn
+            .query(
+                "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'transaction_events'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert!(tables.next().await.unwrap().is_some());
+
+        let mut transaction_columns = conn
+            .query(
+                "SELECT name FROM pragma_table_info('ledger_transactions') WHERE name IN ('event_id', 'payee_key') ORDER BY name",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut transaction_column_names = Vec::new();
+        while let Some(row) = transaction_columns.next().await.unwrap() {
+            transaction_column_names.push(row.get::<String>(0).unwrap());
+        }
+        assert_eq!(transaction_column_names, vec!["event_id", "payee_key"]);
+
+        let mut record_columns = conn
+            .query(
+                "SELECT name FROM pragma_table_info('import_records') WHERE name IN ('counterparty_normalized', 'normalization_version') ORDER BY name",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut record_column_names = Vec::new();
+        while let Some(row) = record_columns.next().await.unwrap() {
+            record_column_names.push(row.get::<String>(0).unwrap());
+        }
+        assert_eq!(
+            record_column_names,
+            vec!["counterparty_normalized", "normalization_version"]
+        );
+        let mut cluster_columns = conn
+            .query(
+                "SELECT name FROM pragma_table_info('duplicate_suspicions') WHERE name='cluster_key'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert!(cluster_columns.next().await.unwrap().is_some());
+
+        let mut confirmation_columns = conn
+            .query(
+                "SELECT name FROM pragma_table_info('duplicate_suspicions') WHERE name IN ('event_id', 'revert_payload') ORDER BY name",
+                (),
+            )
+            .await
+            .unwrap();
+        let mut confirmation_column_names = Vec::new();
+        while let Some(row) = confirmation_columns.next().await.unwrap() {
+            confirmation_column_names.push(row.get::<String>(0).unwrap());
+        }
+        assert_eq!(
+            confirmation_column_names,
+            vec!["event_id", "revert_payload"]
+        );
+    }
+
+    #[tokio::test]
+    async fn bill_import_constraints_enforce_idempotency_staging_and_nullable_provenance() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(root.path().join("bill-import-constraints.db"))
+            .build()
+            .await
+            .unwrap();
+        migrate(&db).await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .await
+            .unwrap();
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, created_at, updated_at) VALUES ('u1', 'constraints@example.com', 'hash', 'Asia/Shanghai', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        for id in ["manual-1", "manual-2"] {
+            conn.execute(
+                "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, created_at, updated_at) VALUES (?1, 'u1', 'expense', 100, '2026-08-11', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+                [id],
+            )
+            .await
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, source_channel, external_id, created_at, updated_at) VALUES ('wechat-1', 'u1', 'expense', 100, '2026-08-11', 'wechat', 'same-id', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        assert!(conn.execute(
+            "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, source_channel, external_id, created_at, updated_at) VALUES ('wechat-2', 'u1', 'expense', 100, '2026-08-11', 'wechat', 'same-id', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+        conn.execute(
+            "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, source_channel, external_id, created_at, updated_at) VALUES ('alipay-1', 'u1', 'expense', 100, '2026-08-11', 'alipay', 'same-id', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO import_batches(id, user_id, source_channel, file_sha256, period_start, period_end, total_count, created_at, updated_at) VALUES ('b1', 'u1', 'wechat', 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', '2026-08-01', '2026-08-11', 3, '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        assert!(conn.execute(
+            "INSERT INTO import_batches(id, user_id, source_channel, file_sha256, period_start, period_end, total_count, status, created_at, updated_at) VALUES ('bad-batch', 'u1', 'wechat', 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', '2026-08-01', '2026-08-11', 1, 'done', '2026-08-11T00:00:00Z', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+        conn.execute(
+            "INSERT INTO import_records(id, batch_id, row_index, external_id, occurred_at, occurred_on, direction, amount_cents, source_note, disposition, transaction_id, created_at) VALUES ('r1', 'b1', 1, 'record-1', '2026-08-11T00:00:00Z', '2026-08-11', 'expense', 100, 'note', 'import', 'wechat-1', '2026-08-11T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        assert!(conn.execute(
+            "INSERT INTO import_records(id, batch_id, row_index, external_id, occurred_at, occurred_on, direction, amount_cents, disposition, transaction_id, created_at) VALUES ('r2', 'b1', 2, 'record-2', '2026-08-11T00:00:00Z', '2026-08-11', 'expense', 100, 'import', 'wechat-1', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+        assert!(conn.execute(
+            "INSERT INTO import_records(id, batch_id, row_index, external_id, occurred_at, occurred_on, direction, amount_cents, disposition, created_at) VALUES ('duplicate-row', 'b1', 1, 'record-duplicate-row', '2026-08-11T00:00:00Z', '2026-08-11', 'expense', 100, 'import', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+        assert!(conn.execute(
+            "INSERT INTO import_records(id, batch_id, row_index, external_id, occurred_at, occurred_on, direction, amount_cents, disposition, transaction_id, created_at) VALUES ('bad-link', 'b1', 2, 'record-link', '2026-08-11T00:00:00Z', '2026-08-11', 'expense', 100, 'pending', 'alipay-1', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+        assert!(conn.execute(
+            "INSERT INTO import_records(id, batch_id, row_index, external_id, occurred_at, occurred_on, direction, amount_cents, disposition, created_at) VALUES ('bad-neutral', 'b1', 2, 'record-3', '2026-08-11T00:00:00Z', '2026-08-11', 'expense', 0, 'neutral', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+        assert!(conn.execute(
+            "INSERT INTO import_records(id, batch_id, row_index, external_id, occurred_at, occurred_on, direction, amount_cents, disposition, created_at) VALUES ('bad-zero', 'b1', 2, 'record-4', '2026-08-11T00:00:00Z', '2026-08-11', 'expense', 1, 'zero_amount', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+        assert!(conn.execute(
+            "INSERT INTO import_records(id, batch_id, row_index, external_id, occurred_at, occurred_on, direction, amount_cents, disposition, created_at) VALUES ('too-large', 'b1', 2, 'record-5', '2026-08-11T00:00:00Z', '2026-08-11', 'expense', 9007199254740992, 'unknown', '2026-08-11T00:00:00Z')",
+            (),
+        ).await.is_err());
+
+        conn.execute("DELETE FROM ledger_transactions WHERE id = 'wechat-1'", ())
+            .await
+            .unwrap();
+        let mut rows = conn
+            .query(
+                "SELECT transaction_id FROM import_records WHERE id = 'r1'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert!(
+            rows.next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get::<Option<String>>(0)
+                .unwrap()
+                .is_none()
+        );
+
+        conn.execute(
+            "UPDATE ledger_transactions SET import_batch_id = 'b1' WHERE id = 'alipay-1'",
+            (),
+        )
+        .await
+        .unwrap();
+        conn.execute("DELETE FROM import_batches WHERE id = 'b1'", ())
+            .await
+            .unwrap();
+        let mut rows = conn
+            .query(
+                "SELECT import_batch_id FROM ledger_transactions WHERE id = 'alipay-1'",
+                (),
+            )
+            .await
+            .unwrap();
+        assert!(
+            rows.next()
+                .await
+                .unwrap()
+                .unwrap()
+                .get::<Option<String>>(0)
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn latest_balance_view_posts_both_transfer_legs() {
+        let root = tempfile::tempdir().unwrap();
+        let db = Builder::new_local(root.path().join("transfer-balances.db"))
+            .build()
+            .await
+            .unwrap();
+        migrate(&db).await.unwrap();
+        let conn = db.connect().unwrap();
+        conn.execute_batch("PRAGMA foreign_keys = ON;")
+            .await
+            .unwrap();
+        conn.execute(
+            "INSERT INTO users(id, email, password_hash, timezone, created_at, updated_at) VALUES ('u1', 'transfer@example.com', 'hash', 'Asia/Shanghai', '2026-08-12T00:00:00Z', '2026-08-12T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+        for (id, name) in [("a", "账户 A"), ("b", "账户 B")] {
+            conn.execute(
+                "INSERT INTO ledger_accounts(id, user_id, name, normalized_name, created_at, updated_at) VALUES (?1, 'u1', ?2, ?2, '2026-08-12T00:00:00Z', '2026-08-12T00:00:00Z')",
+                libsql::params![id, name],
+            )
+            .await
+            .unwrap();
+        }
+        conn.execute(
+            "INSERT INTO ledger_transactions(id, user_id, kind, amount_cents, occurred_on, transfer_from_account_id, transfer_to_account_id, created_at, updated_at) VALUES ('t1', 'u1', 'transfer', 10000, '2026-08-12', 'a', 'b', '2026-08-12T00:00:00Z', '2026-08-12T00:00:00Z')",
+            (),
+        )
+        .await
+        .unwrap();
+
+        let mut rows = conn
+            .query(
+                "SELECT account_id, balance_cents FROM ledger_account_balances WHERE account_id IN ('a', 'b') ORDER BY account_id",
+                (),
+            )
+            .await
+            .unwrap();
+        let from = rows.next().await.unwrap().unwrap();
+        assert_eq!(from.get::<String>(0).unwrap(), "a");
+        assert_eq!(from.get::<i64>(1).unwrap(), -10000);
+        let to = rows.next().await.unwrap().unwrap();
+        assert_eq!(to.get::<String>(0).unwrap(), "b");
+        assert_eq!(to.get::<i64>(1).unwrap(), 10000);
         assert!(rows.next().await.unwrap().is_none());
     }
 }
