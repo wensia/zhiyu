@@ -223,5 +223,5 @@ Codex 沙箱跑不了 playwright。
 | P1 | onLayoutChange + flush-on-unmount（= 迁移机制） | 已完成 `e9cce63` |
 | P2 | compactType=null + preventCollision + findFreeSlot + 底部留白 | 已完成 `e9cce63` |
 | P3 | resize 把手 e/s/se + 三条角标样式 | 已完成 `5c06524` |
-| P4 | 编辑态底纹 + 整理动作 + 撤销 | 待施工 |
+| P4 | 编辑态底纹 + 整理动作 + 撤销 | 已完成 `f4c25f1` |
 | P5 | 后端 y 上限 + 文档翻案 | 待施工 |
