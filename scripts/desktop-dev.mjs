@@ -2,7 +2,7 @@
 
 import { spawn } from "node:child_process"
 import { readFile } from "node:fs/promises"
-import { createServer } from "node:net"
+import { createConnection, createServer } from "node:net"
 import { homedir } from "node:os"
 import { dirname, join, resolve } from "node:path"
 import { fileURLToPath } from "node:url"
@@ -17,6 +17,7 @@ if (command !== "dev") {
 const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..")
 const webDirectory = join(projectRoot, "apps", "web")
 const desktopDirectory = join(projectRoot, "apps", "desktop")
+const localApiUrl = "http://127.0.0.1:8790"
 const viteExecutable = join(
   webDirectory,
   "node_modules",
@@ -67,6 +68,63 @@ async function loadSavedServerUrl() {
   }
 
   return parseServerUrl(connection.serverUrl)
+}
+
+function useRemoteServer() {
+  const value = process.env.ZHIYU_DESKTOP_REMOTE?.trim().toLowerCase()
+  return value === "1" || value === "true"
+}
+
+function canConnect(port) {
+  return new Promise((resolveConnected) => {
+    const socket = createConnection({ host: "127.0.0.1", port })
+    let settled = false
+    const finish = (connected) => {
+      if (settled) return
+      settled = true
+      socket.destroy()
+      resolveConnected(connected)
+    }
+    socket.setTimeout(1_000)
+    socket.once("connect", () => finish(true))
+    socket.once("error", () => finish(false))
+    socket.once("timeout", () => finish(false))
+  })
+}
+
+async function loadLocalApiKeyFile() {
+  const configuredPath = process.env.ZHIYU_DESKTOP_API_KEY_FILE
+  if (!configuredPath) {
+    throw new Error(
+      "本地模式需要 ZHIYU_DESKTOP_API_KEY_FILE。先执行：\n" +
+        '  mkdir -p "$HOME/.config/zhiyu"\n' +
+        '  DATABASE_URL=file:./var/preview.db cargo run -p zhiyu-api --bin zhiyu-api-key -- machine-user@example.com > "$HOME/.config/zhiyu/local-api-key"\n' +
+        '  chmod 600 "$HOME/.config/zhiyu/local-api-key"\n' +
+        '再执行：ZHIYU_DESKTOP_API_KEY_FILE="$HOME/.config/zhiyu/local-api-key" pnpm desktop:dev',
+    )
+  }
+
+  const keyPath = resolve(process.cwd(), configuredPath)
+  let apiKey
+  try {
+    apiKey = await readFile(keyPath, "utf8")
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new Error(
+        `ZHIYU_DESKTOP_API_KEY_FILE 指向的文件不存在：${keyPath}\n` +
+          "请先用本地库签发：\n" +
+          '  mkdir -p "$HOME/.config/zhiyu"\n' +
+          '  DATABASE_URL=file:./var/preview.db cargo run -p zhiyu-api --bin zhiyu-api-key -- machine-user@example.com > "$HOME/.config/zhiyu/local-api-key"\n' +
+          '  chmod 600 "$HOME/.config/zhiyu/local-api-key"\n' +
+          '然后设置：ZHIYU_DESKTOP_API_KEY_FILE="$HOME/.config/zhiyu/local-api-key"',
+      )
+    }
+    throw new Error(`无法读取 ZHIYU_DESKTOP_API_KEY_FILE：${keyPath}（${error.message}）`)
+  }
+  if (!apiKey.trim()) {
+    throw new Error(`ZHIYU_DESKTOP_API_KEY_FILE 不能为空：${keyPath}`)
+  }
+  return keyPath
 }
 
 function canListen(port) {
@@ -137,7 +195,11 @@ function stopProcess(child, signal = "SIGTERM") {
     if (process.platform === "win32") child.kill(signal)
     else process.kill(-child.pid, signal)
   } catch (error) {
-    if (error?.code !== "ESRCH") throw error
+    // ESRCH 是进程组已经没了；EPERM 是进程组还在但已不归我们管（外部 SIGTERM 收走
+    // 整棵树时实测会命中）。两种都已经没有可杀的东西，却都会从这里抛出去——而
+    // stopProcess 是在 shutdown 的循环里调用的，一抛就跳过后面的 SIGKILL 兜底和
+    // 子进程回收，反而留下孤儿 cargo tauri dev，正是 ee67a78 要根除的症状。
+    if (error?.code !== "ESRCH" && error?.code !== "EPERM") throw error
   }
 }
 
@@ -166,23 +228,60 @@ process.once("SIGTERM", () => void shutdown(143, "SIGTERM"))
 process.once("SIGHUP", () => void shutdown(129, "SIGTERM"))
 
 try {
-  const serverUrl = await loadSavedServerUrl()
-  const webPort = await findAvailablePort()
+  const remote = useRemoteServer()
+  let serverUrl
+  let localApiKeyFile
+  if (remote) {
+    serverUrl = await loadSavedServerUrl()
+    console.warn("\n!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
+    console.warn("[知余] 警告：桌面 dev 正在连接线上 API！")
+    console.warn("[知余] 前端的新端点如果服务端尚未部署会失败。")
+    console.warn("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n")
+  } else {
+    serverUrl = localApiUrl
+    if (!(await canConnect(8790))) {
+      throw new Error("本地 API 未运行（127.0.0.1:8790），请先在另一个终端运行 `pnpm dev`")
+    }
+    localApiKeyFile = await loadLocalApiKeyFile()
+  }
+
+  // 本地模式复用 `pnpm dev` 已经起好的那个 Vite，不再起第二个。
+  //
+  // 起第二个的代价不是多一个进程，是端口对不上：5173 被占后它顺延到 5174/5175，
+  // 而本地 API 的 PUBLIC_BASE_URL 写死 5173，csrf_guard 比对 Origin 时端口不等
+  // （origins_match 对 host 宽松、对端口严格），任何写操作都会 403
+  // 「请求来源与服务端配置的不一致」。同源就没有这个问题。
+  const reuseDevServer = !remote && (await canConnect(5173))
+  const webPort = reuseDevServer ? 5173 : await findAvailablePort()
   const localUrl = `http://127.0.0.1:${webPort}`
+  const desktopEnv = {
+    ...process.env,
+    ZHIYU_DESKTOP_URL: localUrl,
+  }
+  if (localApiKeyFile) {
+    desktopEnv.ZHIYU_DESKTOP_API_KEY_FILE = localApiKeyFile
+  } else {
+    delete desktopEnv.ZHIYU_DESKTOP_API_KEY_FILE
+  }
 
   console.log(`[知余] 本地界面：${localUrl}`)
   console.log(`[知余] API 代理：${serverUrl}`)
 
-  const web = startProcess(viteExecutable, ["--host", "127.0.0.1"], {
-    cwd: webDirectory,
-    env: {
-      ...process.env,
-      API_PROXY: serverUrl,
-      WEB_PORT: String(webPort),
-    },
-  })
-  children.push(web)
-  const webExit = childExit(web, "Vite")
+  let webExit = new Promise(() => {})
+  if (reuseDevServer) {
+    console.log("[知余] 复用 pnpm dev 的前端，未另起 Vite")
+  } else {
+    const web = startProcess(viteExecutable, ["--host", "127.0.0.1"], {
+      cwd: webDirectory,
+      env: {
+        ...process.env,
+        API_PROXY: serverUrl,
+        WEB_PORT: String(webPort),
+      },
+    })
+    children.push(web)
+    webExit = childExit(web, "Vite")
+  }
   await waitForHttp(localUrl, webExit)
 
   const desktop = startProcess(
@@ -190,10 +289,7 @@ try {
     ["tauri", "dev", "--config", "src-tauri/tauri.conf.json"],
     {
       cwd: desktopDirectory,
-      env: {
-        ...process.env,
-        ZHIYU_DESKTOP_URL: localUrl,
-      },
+      env: desktopEnv,
     },
   )
   children.push(desktop)

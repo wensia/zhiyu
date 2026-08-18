@@ -23,6 +23,110 @@ const HANDOFF_PAGE_TIMEOUT: Duration = Duration::from_secs(20);
 const DEFAULT_WINDOW_WIDTH: f64 = 1280.0;
 const DEFAULT_WINDOW_HEIGHT: f64 = 840.0;
 
+// 交通灯归侧边栏管：它不再浮在顶栏上，而是独占侧边栏顶上那一行（56pt，与顶栏等
+// 高），品牌 lockup 和折叠按钮都排在它下面。尺寸也比 macOS 默认小一号——默认的
+// 12pt 是按 28pt 标准标题栏配的，放进侧边栏这一行里显得粗壮。
+#[cfg(target_os = "macos")]
+mod traffic_lights {
+    use anyhow::{Context, Result};
+    use objc2_app_kit::{NSWindow, NSWindowButton};
+    use objc2_quartz_core::CATransform3D;
+    use tauri::WebviewWindow;
+
+    /// 系统交通灯的排版，实测得来：按钮控件框 14pt 见方，中间画 12pt 的圆点，相邻
+    /// 按钮中心距 23pt。tao 摆放按钮时也是照抄这个系统间距。
+    const BUTTON_FRAME: f64 = 14.0;
+    const DOT: f64 = 12.0;
+    const PITCH: f64 = 23.0;
+    /// 缩小一号：圆点 12 → 9.6pt，中心距同比收到 18.4pt。
+    const SCALE: f64 = 0.8;
+    /// 侧边栏折叠后的宽度。折叠态交通灯要在侧边栏里居中，所以这个宽度和灯组宽度是
+    /// 一对：改一个就得改另一个（另一半在 window_chrome_script 注入的 CSS 里）。
+    const COLLAPSED_SIDEBAR_WIDTH: f64 = 72.0;
+    /// 侧边栏首格与顶栏等高 56px，交通灯与它共享中线。
+    const SIDEBAR_HEADER_HEIGHT: f64 = 56.0;
+
+    /// 缩放后整组灯的视觉宽度：首尾两个圆点外缘之间。
+    const GROUP_WIDTH: f64 = PITCH * SCALE * 2.0 + DOT * SCALE;
+    /// 折叠态居中定出灯组的视觉左缘（≈12.8pt）。展开态沿用同一个 x——它正好落在
+    /// 侧边栏 12px 的内边距上，与导航项左对齐，折叠/展开切换时灯也不会横向跳。
+    const VISUAL_LEFT: f64 = (COLLAPSED_SIDEBAR_WIDTH - GROUP_WIDTH) / 2.0;
+
+    /// tao 摆的是按钮控件框的左缘，比圆点的视觉左缘往左多出半圈留白。
+    pub const ORIGIN_X: f64 = VISUAL_LEFT - (BUTTON_FRAME - DOT * SCALE) / 2.0;
+    /// tao 把交通灯容器的高度设成「按钮高 + y」，而按钮在容器里贴着底部 9pt，于是
+    /// 圆点中心距窗口顶 = y - 2（实测）。要落在首格中线上，y 得把这 2pt 补回去。
+    pub const ORIGIN_Y: f64 = SIDEBAR_HEADER_HEIGHT / 2.0 + 2.0;
+
+    /// 缩放交通灯。窗口尺寸变化后 AppKit 会重排这三颗按钮，所以这个函数要能被反复
+    /// 调用：它只写死值，不累积。
+    pub fn shrink(window: &WebviewWindow) -> Result<()> {
+        let address = window.ns_window().context("拿不到 macOS 原生窗口")? as usize;
+        window
+            .run_on_main_thread(move || {
+                // SAFETY: 地址来自同一个存活窗口的 ns_window()，且只在主线程解引用。
+                unsafe { shrink_on_main_thread(address) }
+            })
+            .context("在主线程缩放交通灯失败")
+    }
+
+    unsafe fn shrink_on_main_thread(address: usize) {
+        let window: &NSWindow = unsafe { &*(address as *const NSWindow) };
+        let buttons = [
+            NSWindowButton::CloseButton,
+            NSWindowButton::MiniaturizeButton,
+            NSWindowButton::ZoomButton,
+        ];
+        for (index, kind) in buttons.into_iter().enumerate() {
+            let Some(button) = window.standardWindowButton(kind) else {
+                continue;
+            };
+            // 只缩按钮的话中心距还是系统的 23pt，圆点小了、缝隙没变，一组灯就散了。
+            // 收拢间距得挪按钮自己的 frame：热区跟着一起走，不会像 layer 变换那样
+            // 让看得见的圆点和点得到的地方错开。窗口 resize 后 tao 会按系统间距重
+            // 排，所以这里写的是绝对值，反复调用也不会越缩越紧。
+            let mut origin = button.frame().origin;
+            origin.x = ORIGIN_X + PITCH * SCALE * index as f64;
+            button.setFrameOrigin(origin);
+
+            button.setWantsLayer(true);
+            let Some(layer) = button.layer() else {
+                continue;
+            };
+            // 缩放绕 layer 的锚点发生，而 AppKit 给按钮配的锚点在左下角（实测），
+            // 照搬缩放会把圆点往那个角拽。锚点是 AppKit 自己在维护的（改它就得连
+            // position 一起补，之后每次重排还得再补一次），所以这里不动它，改为把
+            // 「锚点到中心」的偏移折进变换里，效果等价而互不干扰。
+            let bounds = layer.bounds();
+            let anchor = layer.anchorPoint();
+            let recenter_x = (0.5 - anchor.x) * bounds.size.width * (1.0 - SCALE);
+            let recenter_y = (0.5 - anchor.y) * bounds.size.height * (1.0 - SCALE);
+            layer.setTransform(scaled(SCALE, recenter_x, recenter_y));
+        }
+    }
+
+    fn scaled(scale: f64, shift_x: f64, shift_y: f64) -> CATransform3D {
+        CATransform3D {
+            m11: scale,
+            m12: 0.0,
+            m13: 0.0,
+            m14: 0.0,
+            m21: 0.0,
+            m22: scale,
+            m23: 0.0,
+            m24: 0.0,
+            m31: 0.0,
+            m32: 0.0,
+            m33: 1.0,
+            m34: 0.0,
+            m41: shift_x,
+            m42: shift_y,
+            m43: 0.0,
+            m44: 1.0,
+        }
+    }
+}
+
 fn centered_position(
     work_area_position: PhysicalPosition<i32>,
     work_area_size: PhysicalSize<u32>,
@@ -59,12 +163,28 @@ fn center_window_in_current_display(window: &WebviewWindow) -> Result<()> {
     Ok(())
 }
 
+// 这里注入的 CSS 只负责「桌面窗口才需要」的装饰：给交通灯让位、隐藏网页版的退出
+// 登录、补一个还原窗口按钮。
+//
+// 交通灯的安置方式经历过三版。第一版让侧边栏躲：`.sidebar{margin-top:34px}` 把整根
+// 侧边栏往下推，交通灯于是悬在一块不属于任何区域的空白里，logo 卡在半空。第二版让
+// 顶栏通宽，交通灯落在顶栏地盘上，只需要 `.topbar{padding-left:96px}`——代价是侧边栏
+// 被顶栏拦腰截断，窗口左上角归顶栏管，可交通灯明明长在侧边栏那一列上。
+//
+// 现在侧边栏通高（见 styles.css 的 .sidebar grid-area），窗口左上角是侧边栏自己的
+// 地盘，交通灯就住在那儿，横向占 12.8..59.2px（几何见 traffic_lights 模块）：
+//   侧边栏顶部空出与顶栏等高的 56px，这一行只归交通灯，品牌 lockup 和折叠按钮整体
+//   下移一格。让品牌挤到交通灯右边也塞得下（展开态 248px 够宽），但那一行就成了
+//   「半格系统控件 + 半格产品标识」的混排，且折叠到 72px 时必然要拆开重排——同一
+//   块东西在两个状态里长得不一样，不如始终让它独占一行。
+//   折叠态宽度从 64px 加到 72px，正是为了让交通灯在这一态左右各余 12.8px、居中落
+//   在侧边栏上。
 fn window_chrome_script(server_url: &Url) -> Result<String> {
     let origin = serde_json::to_string(&server_url.origin().ascii_serialization())?;
     Ok(format!(
         r##"(function () {{
   if (location.origin !== {origin}) return;
-  var css = ".sidebar{{height:calc(100svh - 34px);margin-top:34px;padding-top:0}}.app-shell[data-sidebar='collapsed'] .topbar{{padding-left:76px}}.sidebar-logout{{display:none}}.topbar,.sidebar-header{{user-select:none}}.sidebar-window-reset{{width:32px;height:var(--nav-item-height);margin-top:auto;margin-left:auto;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:var(--radius-control);color:var(--sidebar-foreground);background:transparent;font:inherit;cursor:pointer}}.sidebar-window-reset:hover:not(:disabled){{background:var(--sidebar-accent)}}.sidebar-window-reset svg{{width:18px;height:18px;flex:0 0 18px}}.app-shell[data-sidebar='collapsed'] .sidebar-window-reset{{margin-right:auto}}";
+  var css = ".sidebar{{padding-top:56px}}.app-shell[data-sidebar='collapsed']{{grid-template-columns:72px minmax(0, 1fr)}}.sidebar-logout{{display:none}}.sidebar-window-reset{{width:32px;height:var(--nav-item-height);margin-top:auto;margin-left:auto;display:flex;align-items:center;justify-content:center;padding:0;border:0;border-radius:var(--radius-control);color:var(--sidebar-foreground);background:transparent;font:inherit;cursor:pointer}}.sidebar-window-reset:hover:not(:disabled){{background:var(--sidebar-accent)}}.sidebar-window-reset svg{{width:18px;height:18px;flex:0 0 18px}}.app-shell[data-sidebar='collapsed'] .sidebar-window-reset{{margin-right:auto}}";
   function markDragRegions() {{
     document.querySelectorAll(".topbar,.sidebar-header").forEach(function (element) {{
       element.setAttribute("data-tauri-drag-region", "");
@@ -402,11 +522,43 @@ fn main_window_builder<'a>(
         .background_color(tauri::window::Color(0xff, 0xff, 0xff, 0xff));
     #[cfg(target_os = "macos")]
     {
+        // 交通灯的默认位置是按 macOS 标准 28pt 标题栏算的，整组中心落在 y≈19pt。
+        // 这里的窗口没有标题栏，交通灯坐在侧边栏顶格里，位置得跟着侧边栏走——
+        // 具体数值见 traffic_lights 模块。
         builder = builder
             .title_bar_style(tauri::TitleBarStyle::Overlay)
-            .hidden_title(true);
+            .hidden_title(true)
+            .traffic_light_position(tauri::LogicalPosition::new(
+                traffic_lights::ORIGIN_X,
+                traffic_lights::ORIGIN_Y,
+            ));
     }
     builder
+}
+
+/// 窗口建好后才能摸到 AppKit 的按钮，缩放因此不能写在 builder 里。resize 会让
+/// AppKit 重排按钮（全屏进出尤其明显），所以这里顺带挂上事件重新缩放一次。
+fn apply_window_chrome(window: &WebviewWindow) {
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(error) = traffic_lights::shrink(window) {
+            tracing::error!(error = %format!("{error:#}"), "shrinking traffic lights failed");
+        }
+        let resized_window = window.clone();
+        window.on_window_event(move |event| {
+            if !matches!(event, tauri::WindowEvent::Resized(_)) {
+                return;
+            }
+            if let Err(error) = traffic_lights::shrink(&resized_window) {
+                tracing::error!(
+                    error = %format!("{error:#}"),
+                    "re-shrinking traffic lights after resize failed"
+                );
+            }
+        });
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = window;
 }
 
 fn show_handoff_error(app: &AppHandle, reason: &str) -> Result<()> {
@@ -425,6 +577,7 @@ fn show_handoff_error(app: &AppHandle, reason: &str) -> Result<()> {
             true
         })
         .build()?;
+    apply_window_chrome(&window);
     center_window_in_current_display(&window)?;
     window.show()?;
     Ok(())
@@ -558,6 +711,7 @@ fn open_handoff_window(
             }
         })
         .build()?;
+    apply_window_chrome(&window);
     center_window_in_current_display(&window)?;
 
     let previous_session_cookies = session_cookies_for_url(&window, &server_url)?;
@@ -798,10 +952,14 @@ mod tests {
         );
         let chrome_script = window_chrome_script(&ticket.server_url).unwrap();
         assert!(chrome_script.contains("location.origin !== \"https://zhiyu.example.com\""));
+        // 交通灯独占侧边栏顶上那一行：两个状态都留 56px，宽度只在折叠态改。
+        assert!(chrome_script.contains(".sidebar{padding-top:56px}"));
         assert!(
             chrome_script
-                .contains(".sidebar{height:calc(100svh - 34px);margin-top:34px;padding-top:0}")
+                .contains(".app-shell[data-sidebar='collapsed']{grid-template-columns:72px")
         );
+        assert!(!chrome_script.contains(".topbar{padding-left"));
+        assert!(!chrome_script.contains(".sidebar-header{padding-left"));
         assert!(chrome_script.contains(".sidebar-logout{display:none}"));
         assert!(chrome_script.contains("data-tauri-drag-region"));
         assert!(chrome_script.contains("reset_main_window"));
