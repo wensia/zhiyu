@@ -66,13 +66,14 @@ async function registerVerifyLogin(page: Page, email: string) {
   await page.getByLabel("密码", { exact: true }).fill(password)
   await page.getByRole("button", { name: "登录" }).click()
   await expect(page).toHaveURL(/\/app\/debts/)
-  await expect(page.getByRole("heading", { name: "债务" })).toBeVisible()
+  // 空状态标题「暂无符合条件的债务」也匹配「债务」，不加 exact 会撞上 strict mode。
+  await expect(page.getByRole("heading", { name: "债务", exact: true })).toBeVisible()
 }
 
 async function configureLedgerAccount(page: Page, name: string, accountType: (typeof ledgerAccountTypeLabels)[number] = "微信零钱") {
   await page.getByRole("link", { name: /账户/ }).click()
   await expect(page).toHaveURL(/\/app\/accounts$/)
-  await expect(page.getByRole("heading", { name: "账户" })).toBeVisible()
+  await expect(page.getByRole("heading", { name: "账户", exact: true })).toBeVisible()
   await page.getByRole("button", { name: "新增账户" }).click()
   const dialog = page.getByRole("dialog", { name: "新增账户" })
   await dialog.getByRole("combobox", { name: "账户类型" }).click()
@@ -150,7 +151,9 @@ test("registration, ledger events, reversal and account isolation", async ({ pag
   await page.getByRole("button", { name: "阿青", exact: true }).click()
   await expect(page).toHaveURL(/\/app\/debts\/[^/]+$/)
   const detail = page.locator(".debt-detail-page")
-  await expect(detail.getByRole("heading", { name: "债务详情" })).toBeAttached()
+  // 详情路由由概览卡持有 h1（那条记录的联系人名），顶栏退回产品常量 + 返回动作。
+  await expect(detail.getByRole("heading", { level: 1, name: "阿青", exact: true })).toBeVisible()
+  await expect(page.locator("h1")).toHaveCount(1)
   const topbar = page.locator(".topbar")
   const backToDebtList = topbar.getByRole("button", { name: "返回债务列表" })
   await expect(backToDebtList).toBeVisible()
@@ -331,67 +334,68 @@ test("date picker keeps a stable height and selects a distant leap day", async (
   await expect(dialog).toBeHidden()
 })
 
-test("Kiln rendered-style contract holds on desktop and mobile", async ({ page }) => {
+test("项目自己的布局契约：kiln 规则之外的那部分", async ({ page }) => {
+  // kiln 的规则（圆角阶梯、白卡分层、暖黑阴影、字体栈、字号上下限、clay 上限、标题权威、
+  // 分段轨道外框…）已经由 e2e/design-contract.spec.ts 从 kiln/contract/runtime 直接跑，
+  // 覆盖每一条路由。这里只留 kiln **不管**的东西：本产品自己挑的控件档位、命令栏那一排
+  // 的等高关系、汇总条与表格夹的位置、以及 pointer-first 的焦点策略。
+  //
+  // 之前这个测试是一份手抄的 kiln 断言，抄件立刻开始漂移：它把分段轨道钉在 40px，而
+  // kiln 的规格是控件高 36px，两份规则各自「通过」了很久。
   const suffix = `${Date.now()}-${Math.random().toString(16).slice(2)}`
   await registerVerifyLogin(page, `visual-${suffix}@example.com`)
   const primaryButtons = page.locator(".button-primary:visible")
-  await expect(primaryButtons).toHaveCount(1)
   const styles = await page.evaluate(() => {
-    const control = document.querySelector(".button-primary")!
-    const metric = document.querySelector(".metric")!
-    const dock = document.querySelector(".data-dock")!
-    const panelProbe = document.createElement("div")
-    panelProbe.style.borderRadius = "var(--radius-panel)"
-    document.body.append(panelProbe)
-    const controlStyle = getComputedStyle(control)
-    const metricStyle = getComputedStyle(metric)
+    const control = document.querySelector<HTMLElement>(".button-primary")!
+    const summary = document.querySelector<HTMLElement>(".summary-strip")!
+    const commandbar = document.querySelector<HTMLElement>(".debt-commandbar")!
+    const dock = document.querySelector<HTMLElement>(".data-dock")!
     const dockStyle = getComputedStyle(dock)
     const filter = document.querySelector<HTMLElement>(".toolbar .select-trigger")!
     const tabList = document.querySelector<HTMLElement>(".workspace-tabs [role=tablist]")!
     const activeTab = document.querySelector<HTMLElement>(".workspace-tabs [role=tab][data-state=active]")!
     const pagination = document.querySelector<HTMLElement>(".pagination")!
     const mobileNav = document.querySelector<HTMLElement>(".mobile-nav")!
-    const result = {
-      controlRadius: controlStyle.borderRadius,
+    const headings = [...document.querySelectorAll("h1")]
+    return {
       controlHeight: control.getBoundingClientRect().height,
-      controlBackground: controlStyle.backgroundColor,
-      metricRadius: metricStyle.borderRadius,
-      metricShadow: metricStyle.boxShadow,
-      panelRadius: getComputedStyle(panelProbe).borderRadius,
+      controlBackground: getComputedStyle(control).backgroundColor,
       filterHeight: filter.getBoundingClientRect().height,
       filterRadius: getComputedStyle(filter).borderRadius,
       tabListHeight: tabList.getBoundingClientRect().height,
       activeTabHeight: activeTab.getBoundingClientRect().height,
       activeTabBackground: getComputedStyle(activeTab).backgroundColor,
-      fontFamily: getComputedStyle(document.body).fontFamily,
-      notoDeclared: [...document.fonts].some((font) => /Noto Sans SC/i.test(font.family)),
-      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
+      summaryTop: summary.getBoundingClientRect().top,
+      commandbarBottom: commandbar.getBoundingClientRect().bottom,
+      h1Text: headings.map((h) => (h.textContent || "").trim()).join(" / "),
+      h1InTopbar: headings.every((h) => !!h.closest(".topbar")),
       dockHeight: dock.getBoundingClientRect().height,
       dockOverflow: dockStyle.overflow,
       dockBackground: dockStyle.backgroundColor,
       dockShadow: dockStyle.boxShadow,
       paginationBottom: pagination.getBoundingClientRect().bottom,
       mobileNavTop: mobileNav.getBoundingClientRect().top,
+      overflow: document.documentElement.scrollWidth - document.documentElement.clientWidth,
       mobile: innerWidth <= 760,
     }
-    panelProbe.remove()
-    return result
   })
-  expect(styles.controlRadius).toBe("4px")
+  // 本产品挑的档位：桌面 36px，移动端放到 40px 的触摸目标。kiln 只管下限。
   expect(styles.controlHeight).toBe(styles.mobile ? 40 : 36)
   expect(styles.controlBackground).toBe("rgb(182, 83, 60)")
-  expect(styles.metricRadius).toBe("6px")
-  expect(styles.metricShadow).not.toBe("none")
-  expect(styles.panelRadius).toBe("8px")
   expect(styles.filterHeight).toBe(36)
   expect(styles.filterRadius).toBe("4px")
-  expect(styles.tabListHeight).toBe(40)
-  expect(styles.activeTabHeight).toBe(28)
+  // 命令栏是一排控件：轨道按可见外框算，与同排的主按钮等高；汇总条排在这一排下面。
+  expect(styles.tabListHeight).toBe(styles.mobile ? 40 : 36)
+  expect(styles.activeTabHeight).toBe(styles.mobile ? 36 : 32)
+  expect(styles.tabListHeight).toBe(styles.controlHeight)
   expect(styles.activeTabBackground).toBe("rgb(255, 255, 255)")
+  expect(styles.summaryTop).toBeGreaterThanOrEqual(styles.commandbarBottom)
+  // 标题归属是产品级选择（kiln 只要求「挑定一处、别重复」）：集合路由交给顶栏。
+  expect(styles.h1Text).toBe("债务")
+  expect(styles.h1InTopbar).toBeTruthy()
+  // 表格坞是画布上的区域，不是卡片；定高滚动，分页钉在工作区底部。
   expect(styles.dockBackground).toBe("rgba(0, 0, 0, 0)")
   expect(styles.dockShadow).toBe("none")
-  expect(styles.fontFamily.startsWith('"Noto Sans SC"')).toBeTruthy()
-  expect(styles.notoDeclared).toBeTruthy()
   expect(styles.overflow).toBeLessThanOrEqual(1)
   if (styles.mobile) {
     expect(styles.dockOverflow).toBe("visible")

@@ -36,7 +36,8 @@ async function registerVerifyLogin(page: Page) {
   await page.getByRole("button", { name: "登录" }).click()
   await expect(page).toHaveURL(/\/app\/debts/)
   await page.goto("/app/accounts")
-  await expect(page.getByRole("heading", { name: "账户" })).toBeVisible()
+  // 空状态标题「暂无符合条件的账户」也匹配「账户」，不加 exact 会撞上 strict mode。
+  await expect(page.getByRole("heading", { name: "账户", exact: true })).toBeVisible()
 }
 
 async function chooseAccountType(page: Page, dialog: Locator, label: string) {
