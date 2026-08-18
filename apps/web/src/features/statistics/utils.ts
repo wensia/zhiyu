@@ -46,3 +46,23 @@ export function findFreeSlot(
   }
   return { x: 0, y: bottom }
 }
+
+export function tidyLayout<T extends { x: number; y: number; w: number; h: number }>(widgets: T[]): T[] {
+  const placed: T[] = []
+  return [...widgets].sort((a, b) => a.y - b.y || a.x - b.x).map((widget) => {
+    let y = widget.y
+    while (y > 0) {
+      const overlaps = placed.some((item) => (
+        widget.x < item.x + item.w
+        && widget.x + widget.w > item.x
+        && y - 1 < item.y + item.h
+        && y - 1 + widget.h > item.y
+      ))
+      if (overlaps) break
+      y -= 1
+    }
+    const next = { ...widget, y }
+    placed.push(next)
+    return next
+  })
+}

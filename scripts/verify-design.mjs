@@ -18,6 +18,8 @@ const externalRuntimeTokens = [
   "--brand-mark-image", // brand-mark.tsx 注入品牌图资源
   "--tx-entry-gap", // transaction-workspace.tsx 按格子实测高度算出的日历条目布局
   "--tx-entry-height",
+  "--statistics-grid-row", // dashboard-grid.tsx 由 ROW_HEIGHT 与纵向 GRID_MARGIN 计算行距
+  "--statistics-grid-col", // dashboard-grid.tsx 由横向 GRID_MARGIN 与 12 列计算列距
 ]
 const allowed = new Set([...contract.tokens, ...Object.keys(contract.knownDeviations || {}), ...externalRuntimeTokens])
 const tokenFiles = (await readdir(join(kilnRoot, "tokens")))

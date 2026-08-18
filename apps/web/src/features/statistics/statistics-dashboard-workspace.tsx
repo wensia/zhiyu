@@ -11,7 +11,7 @@ import { AddWidgetSheet, DashboardNameDialog, DashboardTabs, EmptyDashboardState
 import { DashboardGrid } from "./dashboard-grid"
 import { StatisticsPeriodProvider } from "./period"
 import { MetricStrip } from "./shared"
-import { findFreeSlot, monthKeyOf } from "./utils"
+import { findFreeSlot, monthKeyOf, tidyLayout } from "./utils"
 
 function useViewportWidth() {
   const [width, setWidth] = useState(() => typeof window === "undefined" ? 1280 : window.innerWidth)
@@ -226,6 +226,20 @@ export function StatisticsDashboardWorkspace() {
     setConfiguringWidget(undefined)
   }
 
+  const tidyWidgets = useCallback(() => {
+    if (!activeDashboard) return
+    const dashboardId = activeDashboard.id
+    const previousWidgets = activeDashboard.widgets
+    queueWidgetSave(dashboardId, tidyLayout(previousWidgets))
+    toast({
+      title: "布局已整理",
+      action: {
+        label: "撤销",
+        onSelect: () => queueWidgetSave(dashboardId, previousWidgets),
+      },
+    })
+  }, [activeDashboard, queueWidgetSave, toast])
+
   const topbarActions = useMemo(() => (
     <>
       {activeDashboard ? (
@@ -241,13 +255,14 @@ export function StatisticsDashboardWorkspace() {
       ) : null}
       <MonthControls month={month} onChange={setMonth} />
       {activeDashboard && editing ? <Button onClick={() => setAddOpen(true)} variant="default"><PlusIcon />添加组件</Button> : null}
+      {activeDashboard && editing ? <Button onClick={tidyWidgets} variant="outline">整理</Button> : null}
       {activeDashboard ? (
         <Button disabled={!desktop} onClick={() => setEditing((value) => !value)} title={!desktop ? "请在桌面宽度下编辑布局" : undefined} variant="outline">
           {editing ? "完成" : "编辑"}
         </Button>
       ) : null}
     </>
-  ), [activeDashboard, dashboards, desktop, editing, month])
+  ), [activeDashboard, dashboards, desktop, editing, month, tidyWidgets])
 
   useEffect(() => {
     setTopbarSlots({ title: "统计", actions: topbarActions })

@@ -1,4 +1,5 @@
 import ReactGridLayout from "react-grid-layout"
+import type { CSSProperties } from "react"
 
 import type { DashboardWidget, WidgetTypes } from "../../api/types"
 import { usePluginState } from "../../plugins/context"
@@ -106,7 +107,13 @@ export function DashboardGrid({
   const columns = desktop ? 12 : viewportWidth >= 768 ? 6 : 1
 
   return (
-    <div className={`statistics-grid-region${editing ? " statistics-grid-region-editing" : ""}`}>
+    <div
+      className={`statistics-grid-region${editing ? " statistics-grid-region-editing" : ""}`}
+      style={editing ? {
+        "--statistics-grid-row": `${ROW_HEIGHT + GRID_MARGIN[1]}px`,
+        "--statistics-grid-col": `calc((100% + ${GRID_MARGIN[0]}px) / 12)`,
+      } as CSSProperties : undefined}
+    >
       {!desktop ? <p className="statistics-breakpoint-notice" role="status">请在桌面宽度下编辑布局</p> : null}
       {!widgets.length ? (
         <div className="statistics-empty-grid">

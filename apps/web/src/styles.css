@@ -909,7 +909,13 @@ td[data-sticky-cell="right"] { z-index: 20; }
 .statistics-month-controls strong { font-size: var(--text-body); }
 
 .statistics-grid-region { min-height: 0; flex: 1; }
-.statistics-grid-region-editing { padding-bottom: calc((72px + 16px) * 3); }
+.statistics-grid-region-editing {
+  padding-bottom: calc((72px + 16px) * 3);
+  background-image:
+    linear-gradient(to right, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px),
+    linear-gradient(to bottom, color-mix(in srgb, var(--border) 45%, transparent) 1px, transparent 1px);
+  background-size: var(--statistics-grid-col) var(--statistics-grid-row);
+}
 .statistics-breakpoint-notice { margin-bottom: var(--space-3); color: var(--muted-foreground); font-size: var(--text-meta); text-align: right; }
 .statistics-dashboard-grid { min-height: 0; margin-inline: -16px; }
 .statistics-dashboard-grid .react-grid-item { min-width: 0; }

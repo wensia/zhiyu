@@ -155,3 +155,33 @@ test("宽度和高度能分别拉，刷新后尺寸保持", async ({ page }, tes
   expect(reloaded.width).toBeGreaterThan(start.width + 60)
   expect(reloaded.height).toBeGreaterThan(start.height + 60)
 })
+
+test("整理会把留白收拢，撤销能拿回原来的摆法", async ({ page }, testInfo) => {
+  test.skip(testInfo.project.name.includes("mobile"), "布局只在桌面断点可编辑")
+  await registerVerifyLogin(page)
+  await openDashboard(page)
+  await page.getByRole("button", { name: "编辑" }).click()
+
+  // 先制造一个洞：把组件拖到下方，中间空出来
+  const target = card(page, "账户余额")
+  await dragBy(page, "账户余额", 0, 420)
+  const scattered = (await target.boundingBox())!
+
+  await page.getByRole("button", { name: "整理" }).click()
+  await page.waitForTimeout(400)
+  const tidied = (await target.boundingBox())!
+  // 整理 = 手动跑一次垂直收拢，组件应当上浮
+  expect(tidied.y).toBeLessThan(scattered.y - 100)
+
+  // 整理毁掉了刻意留的白，所以必须能拿回来
+  await page.getByRole("button", { name: "撤销" }).click()
+  await page.waitForTimeout(600)
+  const restored = (await target.boundingBox())!
+  expect(Math.abs(restored.y - scattered.y)).toBeLessThan(8)
+
+  await page.waitForTimeout(900)
+  await page.reload()
+  await expect(page.getByRole("heading", { name: "收支趋势" })).toBeVisible()
+  const afterReload = (await card(page, "账户余额").boundingBox())!
+  expect(Math.abs(afterReload.y - scattered.y)).toBeLessThan(8)
+})

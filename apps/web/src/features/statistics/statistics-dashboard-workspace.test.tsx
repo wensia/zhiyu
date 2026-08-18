@@ -116,6 +116,29 @@ describe("StatisticsDashboardWorkspace", () => {
     expect(api.replaceDashboardWidgets).not.toHaveBeenCalled()
   })
 
+  it("tidies the layout and restores the previous coordinates on undo", async () => {
+    const user = userEvent.setup()
+    const widgets = [
+      { ...baseDashboard.widgets[0], y: 4 },
+      { id: "widget-2", widgetType: "core:category-share", pluginId: null, x: 8, y: 6, w: 4, h: 4, config: {} },
+    ]
+    vi.mocked(api.dashboards).mockResolvedValue([{ ...baseDashboard, widgets }])
+    renderWorkspace()
+    await screen.findByText("收支趋势")
+    expect(screen.queryByRole("button", { name: "整理" })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole("button", { name: "编辑" }))
+    await user.click(screen.getByRole("button", { name: "整理" }))
+    await waitFor(() => expect(api.replaceDashboardWidgets).toHaveBeenCalledTimes(1), { timeout: 1500 })
+    const firstPayload = vi.mocked(api.replaceDashboardWidgets).mock.calls[0]?.[1] ?? []
+    expect(firstPayload.map(({ x, y }) => ({ x, y }))).toEqual([{ x: 0, y: 0 }, { x: 8, y: 0 }])
+
+    await user.click(screen.getByRole("button", { name: "撤销" }))
+    await waitFor(() => expect(api.replaceDashboardWidgets).toHaveBeenCalledTimes(2), { timeout: 1500 })
+    const undoPayload = vi.mocked(api.replaceDashboardWidgets).mock.calls[1]?.[1] ?? []
+    expect(undoPayload.map(({ x, y }) => ({ x, y }))).toEqual([{ x: 0, y: 4 }, { x: 8, y: 6 }])
+  })
+
   it("does not save the six-column projection when mounted at 900px", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 900 })
     renderWorkspace()
