@@ -224,4 +224,8 @@ Codex 沙箱跑不了 playwright。
 | P2 | compactType=null + preventCollision + findFreeSlot + 底部留白 | 已完成 `e9cce63` |
 | P3 | resize 把手 e/s/se + 三条角标样式 | 已完成 `5c06524` |
 | P4 | 编辑态底纹 + 整理动作 + 撤销 | 已完成 `f4c25f1` |
-| P5 | 后端 y 上限 + 文档翻案 | 待施工 |
+| P5 | 后端 y 上限 + 文档翻案 | 已完成 `b8cc5ce` |
+
+**五批全部完成（2026-08-18）。** 验收方式：每批 Codex 施工、Claude 跑全量门禁与 e2e。
+跑全量门禁前务必停掉本地 dev —— 90 条并行 Rust 测试与运行中的 dev API 抢资源会造成 flaky，
+每次挂的还不是同一条。
